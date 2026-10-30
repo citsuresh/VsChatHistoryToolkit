@@ -48,7 +48,8 @@ JSON mode: printed to stdout. `--text` mode: printed to stderr as `error (<code>
 | Checkpoints per call | 50 |
 | Checkpoint overview / each `--full` field | 600 / 2000 characters |
 | Checkpoint text per call | 60 000 characters |
-| `stats` rows per group | 25 |
+| `stats` rows per group (also `usage` by model / by month) | 25 |
+| `usage --by-turn` turns | 100 |
 
 Every character cap cuts the text to that many characters and appends one ellipsis character when it cuts, so a capped string can be one character longer than the cap. Caller values above a maximum are clamped and `truncated` is set. Whole chats are never printed.
 
@@ -73,8 +74,16 @@ Words and numbers only; punctuation separates terms and every term is quoted for
 ### `checkpoints <id> [--full]`
 Default: `number`, `title`, `overview`, `created_at`. With `--full` also `history`, `work_done`, `technical_details`, `important_files`, `next_steps`.
 
+### `usage <id> [--by-turn]`
+Token and cost figures of one session, summed from the per-request rows of the `assistant_usage_events` table (read-only, like every read). `recorded` is `true` when the session has rows; `total`, `main` (requests without an `agent_id`) and `subagents` (requests with one) are usage totals; `first_at` / `last_at` are the earliest and latest `created_at`; `by_model[]` (`{model, totals}`, busiest first, top 25); with `--by-turn`, `by_turn[]` (`{turn_index, totals}`, ordered, at most 100, `truncated` set when more).
+
+A usage totals object has `requests`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `nano_aiu`, `duration_ms`. Missing numbers count as 0. If adding the main and subagent figures would overflow a 64-bit integer, that figure stops at the maximum and `truncated` is set. If SQLite itself overflows while summing the stored rows, `usage` fails with `store_unavailable` (exit 3) and `stats` leaves its `usage` section out and sets `truncated`. Values are exactly as stored:
+- `input_tokens` is the whole prompt of each request, so summing it over a chat counts the re-sent context again on every request; it is a measure of tokens processed, not of the chat's length. In the real store `cache_read_tokens` plus `cache_write_tokens` never exceeded `input_tokens` in any row, which suggests (not proven) that input includes the cached tokens.
+- `nano_aiu` is the stored cost unit (`total_nano_aiu`). Its relation to the credits shown in the chat window has not been verified, so it is reported as stored and never converted.
+- A store without the table (or without a column this tool reads) and a session without rows are normal answers: `recorded` is `false` and `note` says why. An unknown session id is `not_found` (exit 2).
+
 ### `stats`
-`total_sessions`, `total_turns`, `by_repository[]`, `by_cwd[]`, `by_month[]` (each `{key, sessions}`; month is the session start `yyyy-MM`; empty values are `unknown`).
+`total_sessions`, `total_turns`, `by_repository[]`, `by_cwd[]`, `by_month[]` (each `{key, sessions}`; month is the session start `yyyy-MM`; empty values are `unknown`). When the usage table exists, also `usage`: `sessions_with_usage`, `total` (usage totals over all requests), `by_model[]` (top 25) and `by_month[]` (`{month, totals}` from each request's `created_at`, newest first, top 25). It is omitted when the table is absent or lacks a column this tool reads.
 
 ### `rename <id> "<title>" [--force] [--dry-run]`
 The only write. Exactly one session, matched by exact id.

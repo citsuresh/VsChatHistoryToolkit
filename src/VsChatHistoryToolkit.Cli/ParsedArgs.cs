@@ -13,7 +13,7 @@ public sealed class ParsedArgs
 
     private static readonly HashSet<string> Flags = new(StringComparer.Ordinal)
     {
-        "text", "force", "dry-run", "full", "help",
+        "text", "force", "dry-run", "full", "help", "by-turn",
     };
 
     private readonly Dictionary<string, string> _options = new(StringComparer.Ordinal);

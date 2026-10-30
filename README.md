@@ -8,7 +8,7 @@ Read-only search over Visual Studio Copilot Chat history stored on your machine,
 
 `%LOCALAPPDATA%\Microsoft\VisualStudio\CopilotCli\`
 
-- `session-store.db` (SQLite, WAL, schema version 8): sessions, turns, checkpoints, and the `search_index` FTS5 table.
+- `session-store.db` (SQLite, WAL, schema version 8): sessions, turns, checkpoints, the per-request `assistant_usage_events` table (token counts and cost, used by `usage` and `stats`), and the `search_index` FTS5 table.
 - `session-state\<session-id>\workspace.yaml` (chat title) and `events.jsonl` (solution name).
 
 Reads open the database with `mode=ro` plus `PRAGMA query_only=ON`, so they work while Visual Studio is running and still see rows that are only in the WAL. The database is never copied and never opened `immutable`. If the schema version (the `schema_version` table) is not 8, every command stops with an error naming the version found.
@@ -39,6 +39,7 @@ chathistory sessions [--repo S] [--cwd S] [--branch S] [--from DATE] [--to DATE]
 chathistory show <id>
 chathistory turns <id> [--index I | --range A-B] [--max-chars N]
 chathistory checkpoints <id> [--full]
+chathistory usage <id> [--by-turn]
 chathistory stats
 chathistory rename <id> "<title>" [--force] [--dry-run]
 chathistory undo-rename <id> [--force] [--dry-run]

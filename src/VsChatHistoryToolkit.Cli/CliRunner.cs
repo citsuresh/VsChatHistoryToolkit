@@ -17,6 +17,7 @@ public static class CliRunner
           show <id>
           turns <id> [--index I | --range A-B] [--max-chars N]
           checkpoints <id> [--full]
+          usage <id> [--by-turn]
           stats
           rename <id> "<title>" [--force] [--dry-run]
           undo-rename <id> [--force] [--dry-run]
@@ -96,6 +97,9 @@ public static class CliRunner
 
             case "checkpoints":
                 return store.Checkpoints(a.Require(1, "checkpoints <id> [--full]")[0], a.Flag("full"));
+
+            case "usage":
+                return store.Usage(a.Require(1, "usage <id> [--by-turn]")[0], a.Flag("by-turn"));
 
             case "stats":
                 a.Require(0, "stats");

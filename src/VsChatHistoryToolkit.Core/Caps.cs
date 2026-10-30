@@ -24,6 +24,8 @@ public static class Caps
 
     public const int StatsTop = 25;
 
+    public const int MaxUsageTurns = 100;
+
     public const int RenameTitleMaxLength = 120;
     public const int ActiveWindowMinutes = 10;
 

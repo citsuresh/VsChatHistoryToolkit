@@ -58,6 +58,24 @@ public static class TextFormatter
                 AppendCounts(sb, "by repository", s.ByRepository);
                 AppendCounts(sb, "by cwd", s.ByCwd);
                 AppendCounts(sb, "by month", s.ByMonth);
+                if (s.Usage is { } u)
+                {
+                    Line(sb,$"  usage: {u.SessionsWithUsage} session(s) with usage rows");
+                    Line(sb,$"    total: {UsageLine(u.Total)}");
+                    foreach (var m in u.ByModel) Line(sb,$"    model {m.Model}: {UsageLine(m.Totals)}");
+                    foreach (var m in u.ByMonth) Line(sb,$"    month {m.Month}: {UsageLine(m.Totals)}");
+                }
+                break;
+            case UsageResult s:
+                Line(sb,$"usage: {s.SessionId}");
+                if (!s.Recorded) { Line(sb,$"  {s.Note}"); break; }
+                Line(sb,$"  first request: {s.FirstAt ?? "-"}   last request: {s.LastAt ?? "-"}");
+                Line(sb,$"  total:     {UsageLine(s.Total!)}");
+                Line(sb,$"  main:      {UsageLine(s.Main!)}");
+                Line(sb,$"  subagents: {UsageLine(s.Subagents!)}");
+                foreach (var m in s.ByModel) Line(sb,$"  model {m.Model}: {UsageLine(m.Totals)}");
+                foreach (var t in s.ByTurn ?? Array.Empty<UsageTurnItem>()) Line(sb,$"  turn {t.TurnIndex}: {UsageLine(t.Totals)}");
+                Line(sb,"  (nano_aiu is the stored cost unit; input tokens count the re-sent context on every request)");
                 break;
             case ChangeResult s:
                 Line(sb,$"{s.Command}{(s.DryRun ? " (dry run)" : "")}: session {s.SessionId}");
@@ -98,6 +116,9 @@ public static class TextFormatter
         }
         return sb.ToString();
     }
+
+    private static string UsageLine(UsageTotals t) =>
+        $"{t.Requests} requests, in {t.InputTokens} (cache read {t.CacheReadTokens}, cache write {t.CacheWriteTokens}), out {t.OutputTokens}, reasoning {t.ReasoningTokens}, nano_aiu {t.NanoAiu}, {t.DurationMs} ms";
 
     private static string Short(string? s) =>
         s is null ? "(null)" : "\"" + TextUtilPublic.Cap(s, 60) + "\"";

@@ -77,12 +77,53 @@ public sealed record CheckpointsResult(string SessionId, bool Full, IReadOnlyLis
 
 public sealed record CountItem(string Key, int Sessions);
 
+/// <summary>
+/// Sums of the stored per-request usage rows. Values are exactly as stored: input_tokens is the whole prompt of each
+/// request (so summing it over a chat counts the re-sent context again every request), and nano_aiu is the stored cost
+/// unit, whose relation to the credits shown in the chat window is not verified.
+/// </summary>
+public sealed record UsageTotals(
+    long Requests,
+    long InputTokens,
+    long OutputTokens,
+    long CacheReadTokens,
+    long CacheWriteTokens,
+    long ReasoningTokens,
+    long NanoAiu,
+    long DurationMs);
+
+public sealed record UsageModelItem(string Model, UsageTotals Totals);
+
+public sealed record UsageTurnItem(long TurnIndex, UsageTotals Totals);
+
+public sealed record UsageResult(
+    string SessionId,
+    bool Recorded,
+    string? Note,
+    UsageTotals? Total,
+    UsageTotals? Main,
+    UsageTotals? Subagents,
+    string? FirstAt,
+    string? LastAt,
+    IReadOnlyList<UsageModelItem> ByModel,
+    IReadOnlyList<UsageTurnItem>? ByTurn) : ToolResult("usage");
+
+public sealed record UsageMonthItem(string Month, UsageTotals Totals);
+
+/// <summary>Usage across all sessions; absent from stats when the store has no usage table.</summary>
+public sealed record UsageOverview(
+    int SessionsWithUsage,
+    UsageTotals Total,
+    IReadOnlyList<UsageModelItem> ByModel,
+    IReadOnlyList<UsageMonthItem> ByMonth);
+
 public sealed record StatsResult(
     int TotalSessions,
     int TotalTurns,
     IReadOnlyList<CountItem> ByRepository,
     IReadOnlyList<CountItem> ByCwd,
-    IReadOnlyList<CountItem> ByMonth) : ToolResult("stats");
+    IReadOnlyList<CountItem> ByMonth,
+    UsageOverview? Usage = null) : ToolResult("stats");
 
 /// <summary>The three values a rename changes. Null means "absent" (line missing / NULL summary).</summary>
 public sealed record SessionState(string? NameLine, string? UserNamedLine, string? Summary);

@@ -241,7 +241,207 @@ public sealed class ChatStore
         var byCwd = Counts(conn, "COALESCE(NULLIF(cwd, ''), 'unknown')", "ORDER BY 2 DESC, 1", ref truncated);
         var byMonth = Counts(conn, "COALESCE(NULLIF(substr(created_at, 1, 7), ''), 'unknown')", "ORDER BY 1 DESC", ref truncated);
 
-        return new StatsResult(sessions, turns, byRepo, byCwd, byMonth) { Truncated = truncated };
+        UsageOverview? usage = null;
+        if (UsageTableReady(conn))
+        {
+            try { usage = UsageOverviewOf(conn, ref truncated); }
+            catch (SqliteException ex) when (IsOverflow(ex)) { truncated = true; }   // a stored figure is absurdly large: leave usage out rather than fail stats
+        }
+
+        return new StatsResult(sessions, turns, byRepo, byCwd, byMonth, usage) { Truncated = truncated };
+    }
+
+    /// <summary>
+    /// Token and cost figures of one session, summed from the per-request rows in assistant_usage_events. A store
+    /// without that table, or a session without rows, is a normal answer (Recorded = false), not an error.
+    /// </summary>
+    public UsageResult Usage(string id, bool byTurn)
+    {
+        try { return UsageCore(id, byTurn); }
+        catch (SqliteException ex) when (IsOverflow(ex))
+        {
+            throw new ToolkitException(ErrorKind.StoreUnavailable,
+                "A usage figure in this session is too large to add up (SQLite integer overflow); the stored values look wrong.");
+        }
+    }
+
+    private static bool IsOverflow(SqliteException ex) => ex.Message.Contains("integer overflow", StringComparison.OrdinalIgnoreCase);
+
+    private UsageResult UsageCore(string id, bool byTurn)
+    {
+        StorePaths.ValidateSessionId(id);
+        using var conn = Open();
+        EnsureSessionExists(conn, id);
+
+        if (!UsageTableReady(conn))
+            return NoUsage(id, "This store has no usage table (or it has an unexpected shape), so no token figures are available.");
+
+        var truncated = false;
+        UsageTotals? main = null, sub = null;
+        string? first = null, last = null;
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                SELECT (agent_id IS NOT NULL) AS sub, {UsageAggregates}, MIN(created_at), MAX(created_at)
+                FROM assistant_usage_events WHERE session_id = $id GROUP BY sub
+                """;
+            cmd.Parameters.AddWithValue("$id", id);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var totals = ReadTotals(r, 1);
+                if (r.GetInt64(0) == 0) main = totals; else sub = totals;
+                first = Earlier(first, Str(r, 9));
+                last = Later(last, Str(r, 10));
+            }
+        }
+
+        if (main is null && sub is null)
+            return NoUsage(id, "No usage rows are recorded for this session.");
+
+        var total = Add(main, sub, ref truncated);
+
+        var byModel = new List<UsageModelItem>();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                SELECT COALESCE(NULLIF(model, ''), 'unknown') AS m, {UsageAggregates}
+                FROM assistant_usage_events WHERE session_id = $id GROUP BY m ORDER BY COUNT(*) DESC, m LIMIT $n
+                """;
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.Parameters.AddWithValue("$n", Caps.StatsTop + 1);
+            ReadModels(cmd, byModel, ref truncated);
+        }
+
+        List<UsageTurnItem>? turns = null;
+        if (byTurn)
+        {
+            turns = new List<UsageTurnItem>();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"""
+                SELECT turn_index, {UsageAggregates}
+                FROM assistant_usage_events WHERE session_id = $id GROUP BY turn_index ORDER BY turn_index LIMIT $n
+                """;
+            cmd.Parameters.AddWithValue("$id", id);
+            cmd.Parameters.AddWithValue("$n", Caps.MaxUsageTurns + 1);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                if (turns.Count == Caps.MaxUsageTurns) { truncated = true; break; }
+                turns.Add(new UsageTurnItem(r.GetInt64(0), ReadTotals(r, 1)));
+            }
+        }
+
+        return new UsageResult(id, true, null, total, main ?? Empty, sub ?? Empty, first, last, byModel, turns) { Truncated = truncated };
+    }
+
+    // ---- usage helpers ----
+
+    private static readonly UsageTotals Empty = new(0, 0, 0, 0, 0, 0, 0, 0);
+
+    private const string UsageAggregates =
+        "COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cache_read_tokens), 0), " +
+        "COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(total_nano_aiu), 0), COALESCE(SUM(duration_ms), 0)";
+
+    private static readonly string[] UsageColumns =
+    {
+        "session_id", "turn_index", "agent_id", "model", "input_tokens", "output_tokens", "cache_read_tokens",
+        "cache_write_tokens", "reasoning_tokens", "total_nano_aiu", "duration_ms", "created_at",
+    };
+
+    private static UsageResult NoUsage(string id, string note) =>
+        new(id, false, note, null, null, null, null, null, Array.Empty<UsageModelItem>(), null);
+
+    /// <summary>True when assistant_usage_events exists with every column this tool reads.</summary>
+    private static bool UsageTableReady(SqliteConnection conn)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT name FROM pragma_table_info('assistant_usage_events')";
+        var have = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using var r = cmd.ExecuteReader();
+        while (r.Read()) have.Add(r.GetString(0));
+        return UsageColumns.All(have.Contains);
+    }
+
+    /// <summary>Reads the eight aggregate columns that start at <paramref name="o"/>.</summary>
+    private static UsageTotals ReadTotals(SqliteDataReader r, int o) =>
+        new(r.GetInt64(o), r.GetInt64(o + 1), r.GetInt64(o + 2), r.GetInt64(o + 3), r.GetInt64(o + 4), r.GetInt64(o + 5), r.GetInt64(o + 6), r.GetInt64(o + 7));
+
+    /// <summary>Adds two totals; a sum that would not fit in a long stops at long.MaxValue and sets <paramref name="saturated"/>.</summary>
+    private static UsageTotals Add(UsageTotals? a, UsageTotals? b, ref bool saturated)
+    {
+        a ??= Empty; b ??= Empty;
+        var s = saturated;
+        long Sum(long x, long y)
+        {
+            try { return checked(x + y); }
+            catch (OverflowException) { s = true; return long.MaxValue; }
+        }
+        var t = new UsageTotals(Sum(a.Requests, b.Requests), Sum(a.InputTokens, b.InputTokens), Sum(a.OutputTokens, b.OutputTokens),
+            Sum(a.CacheReadTokens, b.CacheReadTokens), Sum(a.CacheWriteTokens, b.CacheWriteTokens), Sum(a.ReasoningTokens, b.ReasoningTokens),
+            Sum(a.NanoAiu, b.NanoAiu), Sum(a.DurationMs, b.DurationMs));
+        saturated = s;
+        return t;
+    }
+
+    private static string? Earlier(string? a, string? b) => a is null ? b : b is null ? a : string.CompareOrdinal(a, b) <= 0 ? a : b;
+
+    private static string? Later(string? a, string? b) => a is null ? b : b is null ? a : string.CompareOrdinal(a, b) >= 0 ? a : b;
+
+    /// <summary>Command text must select the model name first, then the eight aggregates, and use LIMIT StatsTop + 1.</summary>
+    private static void ReadModels(SqliteCommand cmd, List<UsageModelItem> into, ref bool truncated)
+    {
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            if (into.Count == Caps.StatsTop) { truncated = true; break; }
+            var name = TextUtil.Cap(TextUtil.Collapse(r.GetString(0)), Caps.TitleChars, out var cut);
+            truncated |= cut;
+            into.Add(new UsageModelItem(name, ReadTotals(r, 1)));
+        }
+    }
+
+    private static UsageOverview UsageOverviewOf(SqliteConnection conn, ref bool truncated)
+    {
+        UsageTotals total;
+        int sessions;
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"SELECT COUNT(DISTINCT session_id), {UsageAggregates} FROM assistant_usage_events";
+            using var r = cmd.ExecuteReader();
+            r.Read();
+            sessions = r.GetInt32(0);
+            total = ReadTotals(r, 1);
+        }
+
+        var byModel = new List<UsageModelItem>();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                SELECT COALESCE(NULLIF(model, ''), 'unknown') AS m, {UsageAggregates}
+                FROM assistant_usage_events GROUP BY m ORDER BY COUNT(*) DESC, m LIMIT $n
+                """;
+            cmd.Parameters.AddWithValue("$n", Caps.StatsTop + 1);
+            ReadModels(cmd, byModel, ref truncated);
+        }
+
+        var byMonth = new List<UsageMonthItem>();
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = $"""
+                SELECT COALESCE(NULLIF(substr(created_at, 1, 7), ''), 'unknown') AS k, {UsageAggregates}
+                FROM assistant_usage_events GROUP BY k ORDER BY 1 DESC LIMIT $n
+                """;
+            cmd.Parameters.AddWithValue("$n", Caps.StatsTop + 1);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                if (byMonth.Count == Caps.StatsTop) { truncated = true; break; }
+                byMonth.Add(new UsageMonthItem(TextUtil.Cap(TextUtil.Collapse(r.GetString(0)), Caps.TitleChars, out _), ReadTotals(r, 1)));
+            }
+        }
+
+        return new UsageOverview(sessions, total, byModel, byMonth);
     }
 
     // ---- helpers ----
