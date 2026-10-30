@@ -1,6 +1,6 @@
 # Stage 2b results: real rename and undo on an active chat
 
-Run on 2026-10-30 against the local Copilot CLI store, with Visual Studio running. The test session was the chat in which this toolkit was being reviewed: it was open, in use (15 turns, 1 checkpoint, last activity about 9 minutes earlier) and loaded in Visual Studio, so it covers the active-chat case. The user chose it. No chat text appears here; the only title written was the test title `Toolkit stage 2b test`.
+Run on 2026-10-30 against the local Copilot CLI store, with Visual Studio running. The test session was the chat in which this toolkit was being reviewed: it was open, in use (15 turns, 1 checkpoint, last activity about 9 minutes earlier) and loaded in Visual Studio, so it covers the active-chat case. The user chose it. No chat text appears here; the only titles written were the two test titles `Toolkit stage 2b test` and `Toolkit rename restart check`.
 
 ## What was done
 
@@ -31,7 +31,19 @@ Run on 2026-10-30 against the local Copilot CLI store, with Visual Studio runnin
 - Undo restores the original exactly.
 - `--force` is required for a chat used in the last 10 minutes, as designed.
 
+## Restart check (second run, same day)
+
+The same chat was renamed again with `rename --force` to the title `Toolkit rename restart check` and left renamed. The user then restarted Visual Studio (a new `devenv` process).
+
+| Check | Result |
+| --- | --- |
+| `workspace.yaml` after the restart | identical to right after the rename (same hash): Visual Studio left the file contents unchanged on close and on start-up; `name:` and `user_named: true` intact |
+| Chat list in the restarted window, read through UI automation | contains one entry named `Session: Toolkit rename restart check, 1 minute ago`; the old title does not appear anywhere in the window |
+| `undo-rename --force` afterwards | exit 0; `workspace.yaml` byte-identical to the original; summary hash and length equal to the original; `user_named: false`; no temp files |
+
+So the full cycle is confirmed: rename, restart, new title in the chat list, undo. A second restart to see the original title come back in the list was not done; the files are back to the original bytes, which is what the list reads at start-up.
+
 ## Not covered
 
-- Confirming that the new title appears in the chat list after a Visual Studio restart. The toolkit reports the new title, and the earlier manual test (editing `name:` by hand) showed that the list reads it at start-up, but this run did not restart Visual Studio.
 - Renaming a chat with a quoted or special-character title end to end in the real chat list (quoting is covered by unit tests, and Visual Studio's own files already contain plain, double-quoted and single-quoted names).
+- The new title was not checked in more than one Visual Studio instance or window.
