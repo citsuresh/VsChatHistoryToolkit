@@ -10,13 +10,16 @@ public sealed class FixtureStore : IDisposable
 {
     public static readonly DateTimeOffset Now = new(2026, 10, 30, 12, 0, 0, TimeSpan.Zero);
 
-    public FixtureStore(int schemaVersion = 8, bool createDb = true)
+    /// <summary>Where a store records its schema number: the real store uses a schema_version table and leaves user_version 0.</summary>
+    public enum SchemaMarker { Table, UserVersion, None }
+
+    public FixtureStore(int schemaVersion = 8, bool createDb = true, SchemaMarker marker = SchemaMarker.Table)
     {
         Root = Path.Combine(Path.GetTempPath(), "vschat-tests-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Root);
         LogDir = Path.Combine(Root, "_log");
         Directory.CreateDirectory(SessionStateDir);
-        if (createDb) CreateSchema(schemaVersion);
+        if (createDb) CreateSchema(schemaVersion, marker);
     }
 
     public string Root { get; }
@@ -41,7 +44,7 @@ public sealed class FixtureStore : IDisposable
         cmd.ExecuteNonQuery();
     }
 
-    private void CreateSchema(int version)
+    private void CreateSchema(int version, SchemaMarker marker)
     {
         using var c = OpenWriter();
         void X(string sql) { using var cmd = c.CreateCommand(); cmd.CommandText = sql; cmd.ExecuteNonQuery(); }
@@ -57,9 +60,11 @@ public sealed class FixtureStore : IDisposable
                                      created_at TEXT);
             CREATE TABLE session_files(session_id TEXT, path TEXT);
             CREATE TABLE session_refs(session_id TEXT, ref TEXT);
-            CREATE VIRTUAL TABLE search_index USING fts5(content, source_type UNINDEXED, source_id UNINDEXED);
+            CREATE TABLE schema_version(version INTEGER NOT NULL);
+            CREATE VIRTUAL TABLE search_index USING fts5(content, session_id UNINDEXED, source_type UNINDEXED, source_id UNINDEXED);
             """);
-        X($"PRAGMA user_version={version}");
+        if (marker == SchemaMarker.Table) X($"INSERT INTO schema_version(version) VALUES({version})");
+        if (marker == SchemaMarker.UserVersion) X($"PRAGMA user_version={version}");
     }
 
     public void AddSession(string id, string? summary = "first message", string? repo = "org/repo", string? cwd = @"C:\src\repo",
@@ -78,7 +83,7 @@ public sealed class FixtureStore : IDisposable
         cmd.Parameters.AddWithValue("$s", sessionId);
         cmd.Parameters.AddWithValue("$i", index);
         var turnId = Convert.ToString(cmd.ExecuteScalar());
-        AddSearchRow(user + " " + assistant, "turn", turnId!);
+        AddSearchRow(user + " " + assistant, "turn", turnId!, sessionId);
     }
 
     public void AddCheckpoint(string sessionId, int number, string title, string overview = "overview", string? history = null,
@@ -86,11 +91,12 @@ public sealed class FixtureStore : IDisposable
     {
         Exec("INSERT INTO checkpoints VALUES($s,$n,$t,$o,$h,$w,$d,$f,$x,'2026-01-05T10:00:00.000Z')",
             ("$s", sessionId), ("$n", number), ("$t", title), ("$o", overview), ("$h", history), ("$w", workDone), ("$d", technical), ("$f", files), ("$x", next));
-        AddSearchRow(title + " " + overview, "checkpoint_overview", sessionId);
+        AddSearchRow(title + " " + overview, "checkpoint_overview", number.ToString(), sessionId);
     }
 
-    public void AddSearchRow(string content, string sourceType, string sourceId) =>
-        Exec("INSERT INTO search_index(content,source_type,source_id) VALUES($c,$t,$i)", ("$c", content), ("$t", sourceType), ("$i", sourceId));
+    public void AddSearchRow(string content, string sourceType, string sourceId, string? sessionId = null) =>
+        Exec("INSERT INTO search_index(content,session_id,source_type,source_id) VALUES($c,$s,$t,$i)",
+            ("$c", content), ("$s", sessionId), ("$t", sourceType), ("$i", sourceId));
 
     public string SessionDir(string id) => Path.Combine(SessionStateDir, id);
     public string YamlPath(string id) => Path.Combine(SessionDir(id), "workspace.yaml");

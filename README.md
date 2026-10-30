@@ -11,7 +11,7 @@ Read-only search over Visual Studio Copilot Chat history stored on your machine,
 - `session-store.db` (SQLite, WAL, schema version 8): sessions, turns, checkpoints, and the `search_index` FTS5 table.
 - `session-state\<session-id>\workspace.yaml` (chat title) and `events.jsonl` (solution name).
 
-Reads open the database with `mode=ro` plus `PRAGMA query_only=ON`, so they work while Visual Studio is running and still see rows that are only in the WAL. The database is never copied and never opened `immutable`. If `PRAGMA user_version` is not 8, every command stops with an error naming the version found.
+Reads open the database with `mode=ro` plus `PRAGMA query_only=ON`, so they work while Visual Studio is running and still see rows that are only in the WAL. The database is never copied and never opened `immutable`. If the schema version (the `schema_version` table) is not 8, every command stops with an error naming the version found.
 
 `rename` and `undo-rename` are the only commands that write, and only for one session (exact id): the `name:` and `user_named:` lines of its `workspace.yaml`, and its `sessions.summary`.
 

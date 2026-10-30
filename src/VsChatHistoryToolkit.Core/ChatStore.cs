@@ -25,11 +25,11 @@ public sealed class ChatStore
 
         var truncated = clamped || tokensCut || rows.Count > take;
         var hits = new List<SearchHit>();
-        foreach (var (snippet, sourceType, sourceId) in rows.Take(take))
+        foreach (var (snippet, sessionId, sourceType, sourceId) in rows.Take(take))
         {
             var text = TextUtil.Cap(TextUtil.Collapse(snippet), Caps.SnippetChars, out var cut);
             truncated |= cut;
-            hits.Add(new SearchHit(ResolveSessionId(conn, sourceType, sourceId), sourceType, sourceId, text));
+            hits.Add(new SearchHit(string.IsNullOrEmpty(sessionId) ? null : sessionId, sourceType, sourceId, text));
         }
 
         return new SearchResult(terms!, tokens, take, hits) { Truncated = truncated };
@@ -280,7 +280,7 @@ public sealed class ChatStore
         return list;
     }
 
-    private static List<(string Snippet, string SourceType, string SourceId)> QuerySnippets(SqliteConnection conn, string match, int take)
+    private static List<(string Snippet, string? SessionId, string SourceType, string SourceId)> QuerySnippets(SqliteConnection conn, string match, int take)
     {
         try
         {
@@ -293,49 +293,19 @@ public sealed class ChatStore
         }
     }
 
-    private static List<(string, string, string)> RunSearch(SqliteConnection conn, string snippetExpr, string match, int take)
+    /// <summary>search_index carries its own session_id column (UNINDEXED), so hits need no lookup to find their session.</summary>
+    private static List<(string Snippet, string? SessionId, string SourceType, string SourceId)> RunSearch(SqliteConnection conn, string snippetExpr, string match, int take)
     {
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = $"SELECT {snippetExpr}, source_type, source_id FROM search_index WHERE search_index MATCH $q ORDER BY rank LIMIT $n";
+        cmd.CommandText = $"SELECT {snippetExpr}, session_id, source_type, source_id FROM search_index WHERE search_index MATCH $q ORDER BY rank LIMIT $n";
         cmd.Parameters.AddWithValue("$q", match);
         cmd.Parameters.AddWithValue("$n", take);
-        var rows = new List<(string, string, string)>();
+        var rows = new List<(string, string?, string, string)>();
         using var r = cmd.ExecuteReader();
         while (r.Read())
-            rows.Add((Str(r, 0) ?? "", Str(r, 1) ?? "", Str(r, 2) ?? ""));
+            rows.Add((Str(r, 0) ?? "", Str(r, 1), Str(r, 2) ?? "", Str(r, 3) ?? ""));
         return rows;
     }
-
-    /// <summary>
-    /// search_index carries no session column, so the owner is resolved from source_id: a session id, a
-    /// "&lt;session id&gt;:..." prefix, or a turns.id. Unresolvable rows report null (the raw source_id is still returned).
-    /// </summary>
-    private static string? ResolveSessionId(SqliteConnection conn, string sourceType, string sourceId)
-    {
-        if (sourceId.Length == 0) return null;
-        if (Exists(conn, "SELECT 1 FROM sessions WHERE id = $x", sourceId)) return sourceId;
-
-        var colon = sourceId.IndexOf(':');
-        if (colon > 0)
-        {
-            var prefix = sourceId[..colon];
-            if (Exists(conn, "SELECT 1 FROM sessions WHERE id = $x", prefix)) return prefix;
-        }
-
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT session_id FROM turns WHERE id = $x";
-        cmd.Parameters.AddWithValue("$x", sourceId);
-        return cmd.ExecuteScalar() as string;
-    }
-
-    private static bool Exists(SqliteConnection conn, string sql, string value)
-    {
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = sql;
-        cmd.Parameters.AddWithValue("$x", value);
-        return cmd.ExecuteScalar() is not null;
-    }
-
     private (string? Title, string Source, bool Cut) ResolveTitle(string id, string? summary)
     {
         var ws = ReadWorkspace(id);

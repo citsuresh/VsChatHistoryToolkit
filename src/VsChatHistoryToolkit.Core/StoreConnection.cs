@@ -76,22 +76,53 @@ public static class StoreConnection
         }
     }
 
+    /// <summary>
+    /// The real store keeps its schema number in a one-row schema_version table and leaves PRAGMA user_version at 0.
+    /// The table is authoritative; user_version is used only when the table does not exist.
+    /// </summary>
     private static void EnsureSchema(SqliteConnection conn)
     {
-        long version;
+        long? version;
+        string source;
         try
         {
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText = "PRAGMA user_version";
-            version = Convert.ToInt64(cmd.ExecuteScalar());
+            if (Scalar(conn, "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'") is not null)
+            {
+                source = "schema_version table";
+                using var cmd = conn.CreateCommand();
+                cmd.CommandText = "SELECT COUNT(*), MAX(version) FROM schema_version";
+                using var reader = cmd.ExecuteReader();
+                reader.Read();
+                var rows = reader.GetInt64(0);
+                if (rows != 1)
+                    throw new ToolkitException(ErrorKind.SchemaMismatch,
+                        $"The schema_version table of session-store.db has {rows} rows; exactly one row with version {ExpectedSchemaVersion} is expected.");
+                version = reader.IsDBNull(1) ? null : reader.GetInt64(1);
+            }
+            else
+            {
+                version = Convert.ToInt64(Scalar(conn, "PRAGMA user_version"));
+                source = "PRAGMA user_version";
+            }
         }
         catch (SqliteException ex)
         {
             throw new ToolkitException(ErrorKind.StoreUnavailable, $"Cannot read the schema version of session-store.db: {ex.Message}");
         }
 
+        if (version is null)
+            throw new ToolkitException(ErrorKind.SchemaMismatch,
+                $"The version in the {source} of session-store.db is NULL; this toolkit supports version {ExpectedSchemaVersion} only.");
         if (version != ExpectedSchemaVersion)
             throw new ToolkitException(ErrorKind.SchemaMismatch,
-                $"Unsupported session-store.db schema version {version}; this toolkit supports version {ExpectedSchemaVersion} only.");
+                $"Unsupported session-store.db schema version {version} (from the {source}); this toolkit supports version {ExpectedSchemaVersion} only.");
+    }
+
+    private static object? Scalar(SqliteConnection conn, string sql)
+    {
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = sql;
+        var value = cmd.ExecuteScalar();
+        return value is DBNull ? null : value;
     }
 }

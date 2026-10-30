@@ -97,7 +97,7 @@ public class ReadCommandTests
     {
         using var fx = new FixtureStore();
         fx.AddSession(A);
-        fx.AddSearchRow("needle " + new string('x', 5000), "turn", A);
+        fx.AddSearchRow("needle " + new string('x', 5000), "turn", "1", A);
 
         var hit = Assert.Single(new ChatStore(fx.Paths).Search("needle", null).Hits);
         Assert.True(hit.Snippet.Length <= Caps.SnippetChars + 1);
@@ -557,6 +557,100 @@ public class ReadCommandTests
         Assert.Equal(ErrorKind.SchemaMismatch, ex.Kind);
         Assert.Contains("7", ex.Message);
         Assert.Equal(ExitCodes.StoreUnavailable, ex.ExitCode);
+    }
+
+    [Fact]
+    public void The_schema_version_comes_from_the_schema_version_table_like_the_real_store()
+    {
+        using var fx = new FixtureStore(schemaVersion: 8, marker: FixtureStore.SchemaMarker.Table);
+        using var conn = StoreConnection.OpenReadOnly(fx.Paths);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "PRAGMA user_version";
+        Assert.Equal(0L, cmd.ExecuteScalar()); // as in the real store, user_version is not the marker
+        Assert.Equal(0, new ChatStore(fx.Paths).Stats().TotalSessions);
+    }
+
+    [Fact]
+    public void The_table_wins_over_user_version_and_the_message_names_the_source()
+    {
+        using var fx = new FixtureStore(schemaVersion: 9);
+        fx.Exec("PRAGMA user_version=8");
+        var ex = Assert.Throws<ToolkitException>(() => new ChatStore(fx.Paths).Stats());
+        Assert.Equal(ErrorKind.SchemaMismatch, ex.Kind);
+        Assert.Contains("9", ex.Message);
+        Assert.Contains("schema_version table", ex.Message);
+    }
+
+    [Fact]
+    public void Without_a_schema_version_table_user_version_is_used()
+    {
+        using var fx = new FixtureStore(schemaVersion: 8, marker: FixtureStore.SchemaMarker.UserVersion);
+        fx.Exec("DROP TABLE schema_version");
+        Assert.Equal(0, new ChatStore(fx.Paths).Stats().TotalSessions);
+
+        using var other = new FixtureStore(schemaVersion: 5, marker: FixtureStore.SchemaMarker.UserVersion);
+        other.Exec("DROP TABLE schema_version");
+        var ex = Assert.Throws<ToolkitException>(() => new ChatStore(other.Paths).Stats());
+        Assert.Contains("5", ex.Message);
+        Assert.Contains("user_version", ex.Message);
+    }
+
+    [Fact]
+    public void No_schema_marker_at_all_is_a_mismatch_naming_version_zero()
+    {
+        using var fx = new FixtureStore(marker: FixtureStore.SchemaMarker.None);
+        fx.Exec("DROP TABLE schema_version");
+        var ex = Assert.Throws<ToolkitException>(() => new ChatStore(fx.Paths).Stats());
+        Assert.Equal(ErrorKind.SchemaMismatch, ex.Kind);
+        Assert.Contains("version 0", ex.Message);
+    }
+
+    [Fact]
+    public void An_empty_schema_version_table_is_a_mismatch()
+    {
+        using var fx = new FixtureStore();
+        fx.Exec("DELETE FROM schema_version");
+        var ex = Assert.Throws<ToolkitException>(() => new ChatStore(fx.Paths).Stats());
+        Assert.Equal(ErrorKind.SchemaMismatch, ex.Kind);
+        Assert.Contains("0 rows", ex.Message);
+    }
+
+    [Fact]
+    public void A_schema_version_table_with_several_rows_is_a_mismatch_even_if_one_of_them_is_8()
+    {
+        using var fx = new FixtureStore();
+        fx.Exec("INSERT INTO schema_version(version) VALUES(7)");
+        var ex = Assert.Throws<ToolkitException>(() => new ChatStore(fx.Paths).Stats());
+        Assert.Equal(ErrorKind.SchemaMismatch, ex.Kind);
+        Assert.Contains("2 rows", ex.Message);
+        Assert.Equal(ExitCodes.StoreUnavailable, ex.ExitCode);
+    }
+
+    [Fact]
+    public void A_null_schema_version_is_a_mismatch()
+    {
+        using var fx = new FixtureStore();
+        fx.Exec("DROP TABLE schema_version");
+        fx.Exec("CREATE TABLE schema_version(version INTEGER)");
+        fx.Exec("INSERT INTO schema_version(version) VALUES(NULL)");
+        var ex = Assert.Throws<ToolkitException>(() => new ChatStore(fx.Paths).Stats());
+        Assert.Equal(ErrorKind.SchemaMismatch, ex.Kind);
+        Assert.Contains("NULL", ex.Message);
+    }
+
+    [Fact]
+    public void Search_hits_use_the_session_id_column_and_a_blank_one_is_unresolved()
+    {
+        using var fx = new FixtureStore();
+        fx.AddSession(A);
+        fx.AddSearchRow("orphaned zebra text", "turn", "999"); // no session_id stored
+        fx.AddSearchRow("linked zebra text", "turn", "998", A);
+
+        var hits = new ChatStore(fx.Paths).Search("zebra", null).Hits;
+
+        Assert.Equal(2, hits.Count);
+        Assert.Contains(hits, h => h.SessionId == A && h.SourceId == "998");
+        Assert.Contains(hits, h => h.SessionId is null && h.SourceId == "999");
     }
 
     [Fact]

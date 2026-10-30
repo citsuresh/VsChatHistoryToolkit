@@ -25,7 +25,7 @@ JSON mode: printed to stdout. `--text` mode: printed to stderr as `error (<code>
 | 0 | | success |
 | 1 | `usage` | bad arguments, bad id shape, empty or over-long title, no searchable words |
 | 2 | `not_found` | no such session row, no session folder or `workspace.yaml`, nothing to undo |
-| 3 | `store_unavailable`, `schema_mismatch` | database missing or cannot be opened; `PRAGMA user_version` is not 8 (message names the found version) |
+| 3 | `store_unavailable`, `schema_mismatch` | database missing or cannot be opened; the schema version is not 8 (the `schema_version` table must hold exactly one row, and its version is read; `PRAGMA user_version` is used only when that table does not exist; the message names the found version and where it came from) |
 | 4 | `refused` | session looks active or recently used (no `--force`); undo target changed since the rename; `workspace.yaml` not valid UTF-8 |
 | 5 | `write_failed` | database locked, log not writable, YAML replace failed, or commit failed. The message states what state was left |
 | 6 | `internal` | unexpected error |
@@ -57,7 +57,7 @@ Every character cap cuts the text to that many characters and appends one ellips
 ### `search <terms...> [--limit N]`
 Words and numbers only; punctuation separates terms and every term is quoted for FTS5 (AND semantics). FTS5 matches word tokens, not substrings.
 
-`hits[]`: `session_id` (null when the row cannot be mapped to a session), `source_type`, `source_id`, `snippet`. Also `query`, `terms`, `limit`, `count`.
+`hits[]`: `session_id` (read from the `search_index.session_id` column; null only if that column is empty), `source_type`, `source_id`, `snippet`. Also `query`, `terms`, `limit`, `count`.
 
 ### `sessions [--repo] [--cwd] [--branch] [--from] [--to] [--limit N]`
 `--repo/--cwd/--branch`: case-insensitive "contains". `--from/--to`: `yyyy-MM-dd` or ISO-8601 (UTC); a date-only `--to` includes that whole day. They filter on the session end (last turn, falling back to `created_at` when there are no turns). Newest first.
@@ -98,13 +98,14 @@ Restores the old values of the latest applied rename of that session that has no
 
 `%LOCALAPPDATA%\VsChatHistoryToolkit\rename-log.jsonl`, one JSON object per line: `op_id`, `at`, `kind` (`rename` or `undo-rename`), `session_id`, `status` (`pending`, `applied`, `failed`), `before`, `after`, `undoes`, `forced`, `error`, `yaml_mtime_ticks`. It contains titles and summaries, so treat it as confidential. It is never committed (`.gitignore`).
 
-## Assumptions to confirm in the Stage 2 live checks
+## Checks against the real store
 
-These were not verified against the real store (Stage 1 uses synthetic fixtures only):
+Stage 2a (read-only commands against the real store, with Visual Studio running) is documented in [STAGE2A_RESULTS.md](STAGE2A_RESULTS.md): counts and timings only, no chat text. What it settled:
 
-1. `PRAGMA user_version` is the schema marker and equals 8.
-2. `search_index.source_id` identifies a session id, a `<session id>:...` value, or a `turns.id`.
-3. `search_index` supports `snippet()`; otherwise the first 200 characters are returned.
-4. `events.jsonl` lines have a `type` containing `user.message` and the `Solution:` text is in a string value inside them.
-5. Visual Studio reads a double-quoted `name:` correctly (plain titles are unaffected).
-6. Visual Studio allows `File.Replace` on `workspace.yaml` (it does not hold the file without delete sharing).
+1. The schema number is in the `schema_version` table (value 8); `PRAGMA user_version` is 0 in the real store. The guard was changed to match (it was wrong before the check).
+2. `search_index` has its own `session_id` column, so hits are attributed without any lookup; `source_id` is `<session id>:<suffix>` for every source type seen.
+3. `snippet()` works on `search_index`.
+4. The `Solution:` line is found in `user.message` events only, and the toolkit's result matches an independent count exactly.
+5. Visual Studio itself writes `name:` as plain, double-quoted and single-quoted scalars, so quoted values are normal.
+
+Still open until Stage 2b (needs a rename on a test session you pick, with Visual Studio restarts): that Visual Studio keeps a rewritten `workspace.yaml` (`File.Replace` while Visual Studio is running), the active or loaded chat case, and whether using a renamed chat makes Visual Studio rewrite `name:`.
