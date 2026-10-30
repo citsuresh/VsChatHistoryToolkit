@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VsChatHistoryToolkit.Core/VsChatHistoryToolkit.Core.csproj" />
+    <Project Path="src/VsChatHistoryToolkit.Cli/VsChatHistoryToolkit.Cli.csproj" />
+  </Folder>
+  <Folder Name="/docs/">
+    <File Path="docs/CLI_CONTRACT.md" />
+    <File Path="README.md" />
+  </Folder>
+  <Project Path="tests/VsChatHistoryToolkit.Tests/VsChatHistoryToolkit.Tests.csproj" />
+</Solution>

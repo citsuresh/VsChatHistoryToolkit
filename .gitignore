@@ -1,0 +1,21 @@
+# Build results
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+artifacts/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.userprefs
+TestResults/
+*.log
+
+# Never commit chat data
+*.db
+*.db-wal
+*.db-shm
+session-state/
+rename-log.jsonl
