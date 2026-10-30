@@ -116,7 +116,11 @@ public sealed class ChatStore
             truncated |= sumCut;
         }
 
-        var solution = SolutionFinder.Find(_paths.EventsPath(id));
+        var scan = SolutionFinder.Scan(_paths.EventsPath(id));
+        var solution = scan.Solution;
+        // "unknown" is only a safe answer when the whole file was scanned.
+        if (solution is null && scan.Incomplete) truncated = true;
+        if (scan.SolutionCut) truncated = true;
 
         var checkpoints = new List<CheckpointTitle>();
         using (var cp = conn.CreateCommand())
@@ -135,7 +139,7 @@ public sealed class ChatStore
         }
 
         return new ShowResult(summary, hostType, cappedSummary, ws.UserNamed,
-            solution ?? "unknown", solution is null ? "none" : "events.jsonl", ws.Exists, checkpoints)
+            solution ?? "unknown", solution is not null ? "events.jsonl" : scan.Incomplete ? "incomplete" : "none", ws.Exists, checkpoints)
         { Truncated = truncated };
     }
 

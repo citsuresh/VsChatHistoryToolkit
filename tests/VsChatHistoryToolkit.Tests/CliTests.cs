@@ -61,6 +61,49 @@ public class CliTests
     }
 
     [Fact]
+    public void Text_mode_neutralises_escape_sequences_and_fake_lines_from_chat_text()
+    {
+        using var fx = new FixtureStore();
+        fx.AddSession(A, summary: "title \u001b[31mred\u001b[0m");
+        fx.AddTurn(A, 0, "hello\u001b]0;pwned\u0007 \u009b2J\r\nFAKE LINE: ok\rOVERWRITE", "reply \u202Ereversed", "2026-01-05T10:00:00.000Z");
+
+        foreach (var args in new[] { new[] { "turns", A, "--text" }, new[] { "sessions", "--text" }, new[] { "search", "hello", "--text" } })
+        {
+            var (exit, output, _) = Run(fx, args);
+
+            Assert.Equal(0, exit);
+            Assert.DoesNotContain('\u001b', output);
+            Assert.DoesNotContain('\u0007', output);
+            Assert.DoesNotContain('\u009b', output);
+            Assert.DoesNotContain('\u202E', output);
+            Assert.DoesNotContain('\r' , output.Replace("\r\n", "\n"));
+            Assert.DoesNotContain(output.Split('\n'), l => l.TrimStart().StartsWith("FAKE LINE", StringComparison.Ordinal));
+        }
+
+        // JSON output is unaffected: the text is escaped by the serializer and round-trips.
+        var json = Json(Run(fx, "turns", A).Out);
+        Assert.Contains("\u001b", json.GetProperty("turns")[0].GetProperty("user_message").GetString());
+    }
+
+    [Fact]
+    public void Text_mode_errors_are_cleaned_too()
+    {
+        using var fx = new FixtureStore();
+        var esc = ((char)0x1B).ToString();
+        var o = new StringWriter();
+        var e = new StringWriter();
+
+        var exit = CliRunner.Run(new[] { "stats", "--text", "--root", @"C:\no-such" + esc + "[31mstore" + "\nFAKE: line" }, o, e,
+            new CliEnvironment(null, fx.LogDir, () => FixtureStore.Now));
+
+        Assert.Equal(3, exit);
+        var err = e.ToString();
+        Assert.False(err.Contains(esc, StringComparison.Ordinal), "escape character reached stderr");
+        Assert.DoesNotContain(err.Split('\n'), l => l.TrimStart().StartsWith("FAKE", StringComparison.Ordinal));
+        Assert.Contains("no-such", err);
+    }
+
+    [Fact]
     public void Text_mode_prints_coverage_line()
     {
         using var fx = new FixtureStore();

@@ -59,7 +59,8 @@ public static class CliRunner
     {
         if (parsed?.Flag("text") == true)
         {
-            stderr.WriteLine($"error ({code}): {message}");
+            // Messages can echo user-supplied paths or ids, so they get the same cleaning as normal text output.
+            stderr.WriteLine(TextFormatter.Clean($"error ({code}): {message}"));
             stderr.WriteLine($"coverage: {Caps.Coverage}");
         }
         else

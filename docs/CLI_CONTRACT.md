@@ -1,6 +1,6 @@
 # chathistory CLI contract
 
-Executable: `chathistory` (project `VsChatHistoryToolkit.Cli`). Output is JSON on stdout unless `--text` is given.
+Executable: `chathistory` (project `VsChatHistoryToolkit.Cli`). Output is JSON on stdout unless `--text` is given. In `--text` mode every printed line is cleaned: line breaks and tabs inside chat text become spaces and other control characters (including terminal escape sequences) are shown as visible symbols, so stored chat text cannot drive the terminal or fake output lines. JSON output is not altered; the serializer escapes it.
 Property names are `snake_case`; null properties are omitted.
 
 ## Envelope (every successful result)
@@ -50,7 +50,7 @@ JSON mode: printed to stdout. `--text` mode: printed to stderr as `error (<code>
 | Checkpoint text per call | 60 000 characters |
 | `stats` rows per group | 25 |
 
-Caller values above a maximum are clamped and `truncated` is set. Whole chats are never printed.
+Every character cap cuts the text to that many characters and appends one ellipsis character when it cuts, so a capped string can be one character longer than the cap. Caller values above a maximum are clamped and `truncated` is set. Whole chats are never printed.
 
 ## Commands
 
@@ -65,7 +65,7 @@ Words and numbers only; punctuation separates terms and every term is quoted for
 `sessions[]`: `id`, `title`, `title_source` (`name` = workspace.yaml `name:`, `summary`, or `none`), `repository`, `cwd`, `branch`, `start` (`created_at`), `end` (`MAX(turns.timestamp)`, UTC ISO string, omitted without turns), `turn_count`.
 
 ### `show <id>`
-`session` (same fields as above), `host_type`, `summary`, `user_named`, `solution` (a name, or `"unknown"`), `solution_source` (`events.jsonl` or `none`), `workspace_yaml_present`, `checkpoints[]` (`number`, `title`). The solution is read from the `Solution:` line in the IDE context of `user.message` events and is never inferred from folders or chat text.
+`session` (same fields as above), `host_type`, `summary`, `user_named`, `solution` (a name; one longer than 200 characters is cut to 200 characters plus a trailing ellipsis character and sets `truncated`; or `"unknown"`), `solution_source` (`events.jsonl`; `none` when the whole file was scanned and no `Solution:` line exists; `incomplete` when the scan stopped at a cap, in which case `truncated` is also `true` and `"unknown"` is not proof of absence), `workspace_yaml_present`, `checkpoints[]` (`number`, `title`). The solution is read from the `Solution:` line in the IDE context of `user.message` events and is never inferred from folders or chat text.
 
 ### `turns <id> [--index i | --range a-b] [--max-chars N]`
 `turns[]`: `index`, `timestamp`, `user_message`, `assistant_response`, `user_message_chars`, `assistant_response_chars` (original lengths), `truncated`. Also `total_turns`, `count`.
@@ -86,6 +86,7 @@ The only write. Exactly one session, matched by exact id.
 - `--dry-run`: runs every check and returns the plan; opens the database read-only, writes nothing, logs nothing.
 - Safety checks (exit 4 `refused`): the session-state folder, session folder or `workspace.yaml` is a symbolic link or junction (or cannot be inspected); `workspace.yaml` has more than one top-level `name:` or `user_named:` line; after the database write lock is taken, the YAML bytes or the summary differ from what was read (another process wrote meanwhile; run the command again).
 - Failure behaviour: lock, missing folder or row, or an unwritable YAML leaves everything unchanged and says so. If the commit fails after the YAML was replaced, the YAML is restored only when it still equals the bytes this rename wrote; if someone else changed it since, it is left as it is and the message says so. If the YAML replace succeeded but its verification fails, the database is rolled back and the message says the YAML may differ from before.
+- File replace: swapping in the new `workspace.yaml` is retried up to 5 times over about 0.4 seconds, because antivirus, indexers or Visual Studio can hold a file for a moment. Before each retry the file is compared with what was read earlier; if another program changed it meanwhile, nothing is changed and exit 4 (`refused`) is returned, so a later attempt never overwrites that edit. If every attempt fails, nothing is changed and exit 5 is returned.
 - Limit: the link and stale-snapshot checks guard against mistakes and ordinary concurrent use, not against a local program that deliberately swaps folders for links during the few milliseconds of a rename.
 
 Result: `session_id`, `dry_run`, `applied`, `forced`, `active_signals[]`, `old_title`, `new_title`, `before` and `after` (`name_line`, `user_named_line`, `summary`), optional `warnings[]`, and `note`, which is always `"New title appears after Visual Studio restarts."` (the `--text` output also ends with that line). `warnings` is set when the change was applied but the final undo-log entry could not be written; `undo-rename` may then not find it, and the earlier `pending` entry in the log still holds the old values.

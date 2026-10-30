@@ -114,6 +114,14 @@ public sealed class FixtureStore : IDisposable
         if (old) File.SetLastWriteTimeUtc(EventsPath(id), Now.UtcDateTime.AddDays(-2));
     }
 
+    /// <summary>Writes events.jsonl exactly as given (any line endings, no trailing newline added).</summary>
+    public void WriteEventsRaw(string id, string text, bool old = true)
+    {
+        Directory.CreateDirectory(SessionDir(id));
+        File.WriteAllText(EventsPath(id), text, new System.Text.UTF8Encoding(false));
+        if (old) File.SetLastWriteTimeUtc(EventsPath(id), Now.UtcDateTime.AddDays(-2));
+    }
+
     public static string SampleYaml(string id, string? name = "Original title", bool userNamed = false) =>
         $"id: {id}\ncwd: C:\\src\\repo\ngit_root: C:\\src\\repo\nrepository: org/repo\nhost_type: vs\nbranch: main\nclient_name: vs\n"
         + (name is null ? "" : $"name: {name}\n")

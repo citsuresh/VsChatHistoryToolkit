@@ -215,6 +215,175 @@ public class ReadCommandTests
         Assert.Equal("none", show.SolutionSource);
     }
 
+    private const string SolutionLine =
+        "{\"type\":\"user.message\",\"data\":{\"ide\":\"Solution: Late.sln\"}}";
+
+    [Fact]
+    public void Show_solution_absent_after_a_full_scan_is_not_truncated()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A);
+        fx.WriteEvents(A, new[] { "{\"type\":\"user.message\",\"data\":{\"content\":\"nothing here\"}}" });
+
+        var show = new ChatStore(fx.Paths).Show(A);
+
+        Assert.Equal("unknown", show.Solution);
+        Assert.Equal("none", show.SolutionSource);
+        Assert.False(show.Truncated);
+    }
+
+    [Fact]
+    public void Show_oversized_line_is_skipped_and_flagged_when_nothing_else_is_found()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A);
+        fx.WriteEvents(A, new[] { new string('x', SolutionFinder.MaxLineChars + 1) });
+
+        var show = new ChatStore(fx.Paths).Show(A);
+
+        Assert.Equal("unknown", show.Solution);
+        Assert.Equal("incomplete", show.SolutionSource);
+        Assert.True(show.Truncated);
+    }
+
+    [Fact]
+    public void Show_finds_the_solution_on_a_line_after_an_oversized_one()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A);
+        fx.WriteEvents(A, new[] { new string('x', SolutionFinder.MaxLineChars + 1), SolutionLine });
+
+        var show = new ChatStore(fx.Paths).Show(A);
+
+        Assert.Equal("Late.sln", show.Solution);
+        Assert.Equal("events.jsonl", show.SolutionSource);
+        Assert.False(show.Truncated);
+    }
+
+    [Fact]
+    public void Show_line_cap_stops_the_scan_and_says_so()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A);
+        fx.WriteEvents(A, Enumerable.Repeat("{}", SolutionFinder.MaxLines).Append(SolutionLine));
+
+        var show = new ChatStore(fx.Paths).Show(A);
+
+        Assert.Equal("unknown", show.Solution);
+        Assert.Equal("incomplete", show.SolutionSource);
+        Assert.True(show.Truncated);
+    }
+
+    [Theory]
+    [InlineData("\n", true)]
+    [InlineData("\r\n", true)]
+    [InlineData("\r", true)]
+    [InlineData("\n", false)]
+    [InlineData("\r\n", false)]
+    [InlineData("\r", false)]
+    public void Show_finds_the_solution_with_any_line_ending(string eol, bool trailingEol)
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A);
+        fx.WriteEventsRaw(A, "{}" + eol + SolutionLine + (trailingEol ? eol : ""));
+
+        var show = new ChatStore(fx.Paths).Show(A);
+
+        Assert.Equal("Late.sln", show.Solution);
+        Assert.False(show.Truncated);
+    }
+
+    [Fact]
+    public void Show_handles_a_crlf_split_across_the_read_buffer()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A);
+        // The solution is on the first line, which is exactly 8191 chars: the CR is the last char of the first
+        // 8192-char read and the LF the first of the next. A mishandled boundary would lose or merge the line.
+        fx.WriteEventsRaw(A, EventLineOfLength(8191) + "\r\n{}\r\n");
+
+        Assert.Equal("Late.sln", new ChatStore(fx.Paths).Show(A).Solution);
+    }
+
+    [Fact]
+    public void Show_handles_a_crlf_split_across_the_read_buffer_before_the_solution_line()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A);
+        fx.WriteEventsRaw(A, new string('x', 8191) + "\r\n" + SolutionLine + "\r\n");
+
+        Assert.Equal("Late.sln", new ChatStore(fx.Paths).Show(A).Solution);
+    }
+
+    [Fact]
+    public void Show_a_solution_name_over_the_cap_is_shortened_and_flagged()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A);
+        fx.WriteEventsRaw(A, "{\"type\":\"user.message\",\"data\":{\"ide\":\"Solution: " + new string('s', 300) + "\"}}\r\n");
+
+        var show = new ChatStore(fx.Paths).Show(A);
+
+        Assert.True(show.Solution.Length <= Caps.SnippetChars + 1);
+        Assert.StartsWith("sss", show.Solution);
+        Assert.True(show.Truncated);
+        Assert.Equal("events.jsonl", show.SolutionSource);
+    }
+
+    /// <summary>A valid user.message event carrying the solution, padded to exactly <paramref name="length"/> chars.</summary>
+    private static string EventLineOfLength(int length)
+    {
+        const string head = "{\"type\":\"user.message\",\"data\":{\"pad\":\"";
+        const string tail = "\",\"ide\":\"Solution: Late.sln\"}}";
+        var pad = length - head.Length - tail.Length;
+        Assert.True(pad >= 0);
+        var line = head + new string('p', pad) + tail;
+        Assert.Equal(length, line.Length);
+        return line;
+    }
+
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void Show_a_file_with_exactly_the_maximum_line_count_is_fully_scanned(string eol)
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A);
+        fx.WriteEventsRaw(A, string.Concat(Enumerable.Repeat("{}" + eol, SolutionFinder.MaxLines)));
+
+        var show = new ChatStore(fx.Paths).Show(A);
+
+        Assert.Equal("none", show.SolutionSource);
+        Assert.False(show.Truncated);
+    }
+
+    [Fact]
+    public void Show_one_line_past_the_maximum_is_incomplete()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A);
+        fx.WriteEventsRaw(A, string.Concat(Enumerable.Repeat("{}\r\n", SolutionFinder.MaxLines)) + SolutionLine);
+
+        var show = new ChatStore(fx.Paths).Show(A);
+
+        Assert.Equal("incomplete", show.SolutionSource);
+        Assert.True(show.Truncated);
+    }
+
+    [Fact]
+    public void Show_a_line_of_exactly_the_maximum_length_is_not_skipped_even_with_crlf()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A);
+        // The solution is inside the exactly-at-the-limit line itself, so skipping it would lose the solution.
+        fx.WriteEventsRaw(A, EventLineOfLength(SolutionFinder.MaxLineChars) + "\r\n{}");
+
+        var show = new ChatStore(fx.Paths).Show(A);
+
+        Assert.Equal("Late.sln", show.Solution);
+        Assert.False(show.Truncated);
+    }
+
     [Fact]
     public void Show_works_without_session_folder_and_fails_for_missing_row()
     {

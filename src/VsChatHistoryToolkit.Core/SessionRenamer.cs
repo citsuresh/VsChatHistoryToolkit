@@ -13,6 +13,8 @@ public sealed class SessionRenamer
 {
     public const string RestartNote = "New title appears after Visual Studio restarts.";
 
+    private const int ReplaceAttempts = 5;
+
     private sealed record LogEntry(
         string OpId, string At, string Kind, string SessionId, string Status,
         SessionState Before, SessionState After, string? Undoes, bool Forced, string? Error, long? YamlMtimeTicks = null);
@@ -167,7 +169,7 @@ public sealed class SessionRenamer
             SetOrRemove(yaml, "name", after.NameLine);
             SetOrRemove(yaml, "user_named", after.UserNamedLine);
             written = yaml.ToBytes();
-            ReplaceAtomically(yamlPath, written);
+            ReplaceAtomically(yamlPath, written, original);
             yamlReplaced = true;
             if (!SameBytes(yamlPath, written))
                 throw new IOException("workspace.yaml was changed by another program while it was being written");
@@ -200,7 +202,7 @@ public sealed class SessionRenamer
                 // otherwise someone else (Visual Studio or a person) has edited it since, and that edit must survive.
                 if (SameBytes(yamlPath, written!))
                 {
-                    ReplaceAtomically(yamlPath, original);
+                    ReplaceAtomically(yamlPath, original, written!);
                     state = "workspace.yaml was restored to its previous content; nothing was changed.";
                 }
                 else
@@ -261,13 +263,34 @@ public sealed class SessionRenamer
     }
 
     /// <summary>Writes a temp file next to the target, swaps it in, and checks the bytes that landed.</summary>
-    private static void ReplaceAtomically(string path, byte[] bytes)
+    /// <param name="expectedBefore">What the file must still contain; checked again before every retry so a later
+    /// attempt never overwrites an edit made while the file was held.</param>
+    private void ReplaceAtomically(string path, byte[] bytes, byte[] expectedBefore)
     {
         var temp = path + "." + Guid.NewGuid().ToString("N")[..8] + ".tmp";
         try
         {
             File.WriteAllBytes(temp, bytes);
-            File.Replace(temp, path, null);
+            // Antivirus, indexers or Visual Studio can hold the file for a moment; retry briefly before giving up.
+            for (var attempt = 1; ; attempt++)
+            {
+                StageHook?.Invoke(attempt == 1 ? "before-replace" : "before-replace-retry");
+                try
+                {
+                    // A retry only goes ahead after the current bytes were read and still match; a failed read
+                    // (the file may still be held) counts as a failed attempt, never as permission to replace.
+                    if (attempt > 1 && !SameBytes(path, expectedBefore))
+                        throw new ToolkitException(ErrorKind.Refused,
+                            "workspace.yaml was changed by another program while the replace was being retried. Nothing was changed.");
+
+                    File.Replace(temp, path, null);
+                    break;
+                }
+                catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < ReplaceAttempts)
+                {
+                    Thread.Sleep(40 * attempt);
+                }
+            }
         }
         finally
         {

@@ -396,6 +396,99 @@ public class RenameTests
     }
 
     [Fact]
+    public void An_edit_made_while_the_replace_is_being_retried_is_detected_and_not_overwritten()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A, summary: "old summary");
+        var r = Renamer(fx);
+        byte[]? edited = null;
+        r.StageHook = stage =>
+        {
+            if (stage != "before-replace-retry" || edited is not null) return;
+            File.AppendAllText(fx.YamlPath(A), "extra: added while the file was held\n");
+            edited = File.ReadAllBytes(fx.YamlPath(A));
+        };
+
+        // Holding the file without delete sharing makes File.Replace fail, so the retry loop runs; writes stay allowed.
+        using (new FileStream(fx.YamlPath(A), FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        {
+            var ex = Assert.Throws<ToolkitException>(() => r.Rename(A, "Mine", false, false));
+
+            Assert.Equal(ErrorKind.Refused, ex.Kind);
+            Assert.Contains("while the replace was being retried", ex.Message);
+        }
+
+        Assert.NotNull(edited);
+        Assert.Equal(edited, File.ReadAllBytes(fx.YamlPath(A)));
+        Assert.Equal("old summary", Summary(fx, A));
+        Assert.Empty(Directory.GetFiles(fx.SessionDir(A), "*.tmp"));
+    }
+
+    [Fact]
+    public void A_file_held_exclusively_for_a_moment_is_retried_and_then_replaced()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A, summary: "old summary");
+        var r = Renamer(fx);
+        FileStream? hold = null;
+        var retries = 0;
+        r.StageHook = stage =>
+        {
+            if (stage == "before-replace") hold = new FileStream(fx.YamlPath(A), FileMode.Open, FileAccess.Read, FileShare.None);
+            if (stage == "before-replace-retry" && ++retries == 2)
+            {
+                hold!.Dispose();
+                hold = null;
+            }
+        };
+
+        ChangeResult result;
+        try
+        {
+            result = r.Rename(A, "Retried", false, false);
+        }
+        finally
+        {
+            hold?.Dispose();
+        }
+
+        Assert.True(result.Applied);
+        Assert.True(retries >= 2);
+        Assert.Contains("name: Retried", File.ReadAllText(fx.YamlPath(A)));
+        Assert.Equal("Retried", Summary(fx, A));
+        Assert.Empty(Directory.GetFiles(fx.SessionDir(A), "*.tmp"));
+    }
+
+    [Fact]
+    public void A_file_held_exclusively_for_the_whole_retry_budget_fails_with_nothing_changed()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A, summary: "old summary");
+        var bytes = File.ReadAllBytes(fx.YamlPath(A));
+        var r = Renamer(fx);
+        FileStream? hold = null;
+        r.StageHook = stage =>
+        {
+            if (stage == "before-replace") hold = new FileStream(fx.YamlPath(A), FileMode.Open, FileAccess.Read, FileShare.None);
+        };
+
+        try
+        {
+            var ex = Assert.Throws<ToolkitException>(() => r.Rename(A, "Never", false, false));
+            Assert.Equal(ErrorKind.WriteFailed, ex.Kind);
+            Assert.Contains("Nothing was changed", ex.Message);
+        }
+        finally
+        {
+            hold?.Dispose();
+        }
+
+        Assert.Equal(bytes, File.ReadAllBytes(fx.YamlPath(A)));
+        Assert.Equal("old summary", Summary(fx, A));
+        Assert.Empty(Directory.GetFiles(fx.SessionDir(A), "*.tmp"));
+    }
+
+    [Fact]
     public void Duplicate_top_level_keys_are_refused_untouched()
     {
         using var fx = new FixtureStore();
