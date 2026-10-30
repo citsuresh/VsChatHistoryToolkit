@@ -26,7 +26,7 @@ public sealed class SessionRenamer
     private readonly TimeSpan _window;
 
     public SessionRenamer(StorePaths paths, string logDir, Func<DateTimeOffset>? clock = null,
-        int busyTimeoutMs = 3000, TimeSpan? activeWindow = null)
+        int busyTimeoutMs = 10_000, TimeSpan? activeWindow = null)
     {
         _paths = paths;
         _logDir = logDir;
