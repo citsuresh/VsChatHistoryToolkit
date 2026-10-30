@@ -171,6 +171,35 @@ public class RenameTests
     }
 
     [Fact]
+    public void The_printed_result_caps_long_summaries_but_the_log_and_undo_keep_them_whole()
+    {
+        using var fx = new FixtureStore();
+        var longSummary = new string('s', 5000);
+        fx.AddIdleSession(A, summary: longSummary);
+        var r = Renamer(fx);
+
+        var result = r.Rename(A, "Short new title", false, false);
+
+        Assert.True(result.Truncated);
+        Assert.True(result.Before.Summary!.Length <= Caps.SnippetChars + 1);
+        Assert.Equal("Short new title", result.After.Summary);
+        Assert.Contains(longSummary, File.ReadAllText(fx.LogPath));
+
+        var undo = r.Undo(A, false, false);
+
+        Assert.True(undo.Applied);
+        Assert.True(undo.After.Summary!.Length <= Caps.SnippetChars + 1);
+        Assert.Equal(longSummary, Summary(fx, A));
+    }
+
+    [Fact]
+    public void A_result_with_only_short_values_is_not_truncated()
+    {
+        using var fx = new FixtureStore();
+        fx.AddIdleSession(A, summary: "short");
+        Assert.False(Renamer(fx).Rename(A, "Also short", false, dryRun: true).Truncated);
+    }
+    [Fact]
     public void Dry_run_changes_nothing_and_writes_no_log()
     {
         using var fx = new FixtureStore();

@@ -231,13 +231,32 @@ public sealed class SessionRenamer
         };
     }
 
+    /// <summary>
+    /// The printed result shows old and new values cut to the snippet cap (a summary can be a whole first message);
+    /// the undo log keeps the full values so undo restores them exactly.
+    /// </summary>
     private ChangeResult BuildResult(string kind, string id, bool dryRun, bool applied, bool forced,
-        IReadOnlyList<string> signals, SessionState before, SessionState after) =>
-        new(kind, id, dryRun, applied, forced, signals,
-            before.NameLine is null ? null : WorkspaceYaml.ValueOf(before.NameLine, "name"),
-            after.NameLine is null ? null : WorkspaceYaml.ValueOf(after.NameLine, "name"),
-            before, after, RestartNote);
+        IReadOnlyList<string> signals, SessionState before, SessionState after)
+    {
+        var cut = false;
+        string? Shown(string? s)
+        {
+            if (s is null) return null;
+            var shown = TextUtil.Cap(s, Caps.SnippetChars, out var c);
+            cut |= c;
+            return shown;
+        }
 
+        var shownBefore = new SessionState(Shown(before.NameLine), Shown(before.UserNamedLine), Shown(before.Summary));
+        var shownAfter = new SessionState(Shown(after.NameLine), Shown(after.UserNamedLine), Shown(after.Summary));
+        var oldTitle = Shown(before.NameLine is null ? null : WorkspaceYaml.ValueOf(before.NameLine, "name"));
+        var newTitle = Shown(after.NameLine is null ? null : WorkspaceYaml.ValueOf(after.NameLine, "name"));
+
+        return new ChangeResult(kind, id, dryRun, applied, forced, signals, oldTitle, newTitle, shownBefore, shownAfter, RestartNote)
+        {
+            Truncated = cut,
+        };
+    }
     private static void SetOrRemove(WorkspaceYaml yaml, string key, string? line)
     {
         if (line is null) yaml.RemoveLine(key);
