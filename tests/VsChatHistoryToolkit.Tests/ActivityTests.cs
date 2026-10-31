@@ -29,9 +29,9 @@ public class ActivityTests
         var result = new ChatStore(fx.Paths).Activity(null, null, null);
 
         Assert.Equal(new[] { "2026-01-03", "2026-01-02", "2026-01-01" }, result.Days.Select(d => d.Day));
-        Assert.Equal(new ActivityDayItem("2026-01-03", 0, 0, 1, 5), result.Days[0]);
-        Assert.Equal(new ActivityDayItem("2026-01-02", 1, 1, 0, 0), result.Days[1]);
-        Assert.Equal(new ActivityDayItem("2026-01-01", 3, 2, 2, 12), result.Days[2]);
+        Assert.Equal(new ActivityDayItem("2026-01-03", 0, 0, 1, 5, 0), result.Days[0]);
+        Assert.Equal(new ActivityDayItem("2026-01-02", 1, 1, 0, 0, 0), result.Days[1]);
+        Assert.Equal(new ActivityDayItem("2026-01-01", 3, 2, 2, 12, 0), result.Days[2]);
         Assert.False(result.Truncated);
         Assert.Equal(Caps.Coverage, result.Coverage);
     }
@@ -66,7 +66,7 @@ public class ActivityTests
 
         var result = new ChatStore(fx.Paths).Activity(null, null, null);
 
-        Assert.Equal(new ActivityDayItem("2026-01-02", 0, 0, 1, 9), Assert.Single(result.Days));
+        Assert.Equal(new ActivityDayItem("2026-01-02", 0, 0, 1, 9, null), Assert.Single(result.Days));
     }
 
     [Fact]
@@ -81,8 +81,71 @@ public class ActivityTests
 
         Assert.Null(result.Days[0].Requests);
         Assert.Null(result.Days[0].NanoAiu);
+        Assert.Null(result.Days[0].Credits);
         Assert.DoesNotContain("\"requests\"", json, StringComparison.Ordinal);
         Assert.DoesNotContain("\"nano_aiu\"", json, StringComparison.Ordinal);
+        Assert.DoesNotContain("\"credits\"", json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Activity_sums_credits_per_day_with_null_as_zero()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        fx.AddTurn(A, 0, "u", "a", "2026-01-01T10:00:00.000Z");
+        fx.AddTurn(A, 1, "u", "a", "2026-01-03T10:00:00.000Z");
+        for (var i = 0; i < 4; i++) fx.AddUsage(A, 0, "m", 1, 1, createdAt: "2026-01-01T10:00:00.000Z", multiplier: 15.0);
+        fx.AddUsage(A, 0, "m", 1, 1, createdAt: "2026-01-01T11:00:00.000Z");
+        fx.AddUsage(A, 0, "m", 1, 1, createdAt: "2026-01-02T11:00:00.000Z", multiplier: 0.125, agentId: "agent-1");
+
+        var result = new ChatStore(fx.Paths).Activity(null, null, null);
+
+        Assert.Equal(new double?[] { 0.0, 0.13, 60.0 }, result.Days.Select(d => d.Credits));
+        Assert.Equal(new long?[] { 0, 1, 5 }, result.Days.Select(d => d.Requests));
+    }
+
+    [Fact]
+    public void Activity_omits_credits_when_the_usage_table_has_no_request_multiplier()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable(withMultiplier: false);
+        fx.AddSession(A);
+        fx.AddUsage(A, 0, "m", 1, 1, nanoAiu: 3, createdAt: "2026-01-01T10:00:00.000Z");
+
+        var result = new ChatStore(fx.Paths).Activity(null, null, null);
+
+        Assert.Equal(new ActivityDayItem("2026-01-01", 0, 0, 1, 3, null), Assert.Single(result.Days));
+        Assert.DoesNotContain("credits", JsonOut.Serialize(result));
+        Assert.DoesNotContain("credits", Run(fx, "activity", "--text").Output);
+    }
+
+    [Fact]
+    public void Activity_reports_sqlite_overflow_for_daily_credits()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddUsage(A, 0, "m", 1, 1, multiplier: double.MaxValue);
+        fx.AddUsage(A, 1, "m", 1, 1, multiplier: double.MaxValue);
+
+        var ex = Assert.Throws<ToolkitException>(() => new ChatStore(fx.Paths).Activity(null, null, null));
+
+        Assert.Equal(ErrorKind.StoreUnavailable, ex.Kind);
+        Assert.Contains("too large", ex.Message);
+    }
+
+    [Fact]
+    public void Activity_reports_sqlite_integer_overflow_for_credits_stored_as_integers()
+    {
+        using var fx = new FixtureStore();
+        // An untyped column keeps integers as integers, so SUM overflows as an integer rather than going to infinity.
+        fx.Exec("CREATE TABLE assistant_usage_events(session_id TEXT, created_at TEXT, total_nano_aiu INTEGER, request_multiplier)");
+        fx.Exec("INSERT INTO assistant_usage_events VALUES($s, $c, 1, $m)", ("$s", A), ("$c", "2026-01-02T00:00:00.000Z"), ("$m", long.MaxValue));
+        fx.Exec("INSERT INTO assistant_usage_events VALUES($s, $c, 1, $m)", ("$s", A), ("$c", "2026-01-02T01:00:00.000Z"), ("$m", 1L));
+
+        var ex = Assert.Throws<ToolkitException>(() => new ChatStore(fx.Paths).Activity(null, null, null));
+
+        Assert.Equal(ErrorKind.StoreUnavailable, ex.Kind);
     }
 
     [Fact]
@@ -139,7 +202,7 @@ public class ActivityTests
         fx.AddUsageTable();
         fx.AddSession(A);
         fx.AddTurn(A, 0, "u", "a", "2026-01-01T10:00:00.000Z");
-        fx.AddUsage(A, 0, "m", 1, 1, nanoAiu: 7, createdAt: "2026-01-01T10:00:00.000Z");
+        fx.AddUsage(A, 0, "m", 1, 1, nanoAiu: 7, createdAt: "2026-01-01T10:00:00.000Z", multiplier: 1.0);
 
         var (exit, output) = Run(fx, "activity", "--from", "2026-01-01");
         Assert.Equal(0, exit);
@@ -153,9 +216,10 @@ public class ActivityTests
         Assert.Equal(1, day.GetProperty("chats").GetInt64());
         Assert.Equal(1, day.GetProperty("requests").GetInt64());
         Assert.Equal(7, day.GetProperty("nano_aiu").GetInt64());
+        Assert.Equal(1.0, day.GetProperty("credits").GetDouble());
 
         var text = Run(fx, "activity", "--text").Output;
-        Assert.Contains("2026-01-01: 1 turns, 1 chats, 1 requests, nano_aiu 7", text);
+        Assert.Contains("2026-01-01: 1 turns, 1 chats, 1 requests, nano_aiu 7, credits 1.0", text);
         Assert.Contains("coverage: session-store.db only", text);
     }
 

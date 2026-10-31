@@ -10,7 +10,10 @@ public class UsageTopTests
     private const string B = "22222222-2222-2222-2222-222222222222";
     private const string C = "33333333-3333-3333-3333-333333333333";
 
-    /// <summary>A: most cost, B: most tokens, C: most requests, so each --by gives a different leader.</summary>
+    /// <summary>
+    /// A: most cost, B: most tokens, C: most requests, so each --by gives a different leader. Credits rank C (6.0, one
+    /// NULL multiplier), B (1.0), A (0.5), an order none of the other metrics gives.
+    /// </summary>
     private static FixtureStore StoreWithUsage()
     {
         var fx = new FixtureStore();
@@ -18,11 +21,11 @@ public class UsageTopTests
         fx.AddSession(A, summary: "chat a");
         fx.AddSession(B, summary: "chat b");
         fx.AddSession(C, summary: "chat c");
-        fx.AddUsage(A, 0, "m", 100, 10, cacheRead: 50, reasoning: 5, nanoAiu: 9_000, createdAt: "2026-01-05T10:00:00.000Z");
-        fx.AddUsage(B, 0, "m", 5000, 500, nanoAiu: 1_000, createdAt: "2026-01-10T10:00:00.000Z");
-        fx.AddUsage(C, 0, "m", 10, 1, nanoAiu: 100, createdAt: "2026-01-20T10:00:00.000Z");
+        fx.AddUsage(A, 0, "m", 100, 10, cacheRead: 50, reasoning: 5, nanoAiu: 9_000, createdAt: "2026-01-05T10:00:00.000Z", multiplier: 0.5);
+        fx.AddUsage(B, 0, "m", 5000, 500, nanoAiu: 1_000, createdAt: "2026-01-10T10:00:00.000Z", multiplier: 1.0);
+        fx.AddUsage(C, 0, "m", 10, 1, nanoAiu: 100, createdAt: "2026-01-20T10:00:00.000Z", multiplier: 3.0);
         fx.AddUsage(C, 1, "m", 10, 1, nanoAiu: 100, createdAt: "2026-01-20T11:00:00.000Z");
-        fx.AddUsage(C, 2, "m", 10, 1, nanoAiu: null, createdAt: "2026-01-31T23:59:59.000Z", agentId: "agent-1");
+        fx.AddUsage(C, 2, "m", 10, 1, nanoAiu: null, createdAt: "2026-01-31T23:59:59.000Z", agentId: "agent-1", multiplier: 3.0);
         return fx;
     }
 
@@ -73,6 +76,26 @@ public class UsageTopTests
         Assert.Equal(3, c.Requests);
         Assert.Equal(200, c.NanoAiu);
         Assert.Equal("2026-01-31T23:59:59.000Z", c.LastAt);
+    }
+
+    [Fact]
+    public void Usage_top_by_credits_breaks_ties_on_the_rounded_figure_by_session_id()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        fx.AddSession(B);
+        fx.AddSession(C);
+        // Ids reversed against the raw sums: B has three rows of 0.33, A one row of 0.99, and C sums to 0.993, which a
+        // raw-sum ranking would put first. All three show 0.99, so they must tie and follow the session id.
+        for (var i = 0; i < 3; i++) fx.AddUsage(B, i, "m", 1, 1, multiplier: 0.33);
+        fx.AddUsage(A, 0, "m", 1, 1, multiplier: 0.99);
+        for (var i = 0; i < 3; i++) fx.AddUsage(C, i, "m", 1, 1, multiplier: 0.331);
+
+        var r = new ChatStore(fx.Paths).UsageTop(null, null, "credits", null);
+
+        Assert.Equal(new[] { A, B, C }, r.Sessions.Select(s => s.SessionId));
+        Assert.Equal(new double?[] { 0.99, 0.99, 0.99 }, r.Sessions.Select(s => s.Credits));
     }
 
     [Fact]
@@ -163,11 +186,80 @@ public class UsageTopTests
     }
 
     [Fact]
+    public void Usage_top_ranks_by_credits_and_reports_them_per_chat()
+    {
+        using var fx = StoreWithUsage();
+
+        var r = new ChatStore(fx.Paths).UsageTop(null, null, " Credits ", null);
+
+        Assert.True(r.Recorded);
+        Assert.Null(r.Note);
+        Assert.Equal("credits", r.By);
+        Assert.Equal(new[] { C, B, A }, r.Sessions.Select(s => s.SessionId));
+        Assert.Equal(new double?[] { 6.0, 1.0, 0.5 }, r.Sessions.Select(s => s.Credits));
+        Assert.Equal(new double?[] { 0.5, 1.0, 6.0 }, new ChatStore(fx.Paths).UsageTop(null, null, "aiu", null).Sessions.Select(s => s.Credits));
+    }
+
+    [Fact]
+    public void Usage_top_credits_follow_the_date_range()
+    {
+        using var fx = StoreWithUsage();
+
+        var r = new ChatStore(fx.Paths).UsageTop(null, "2026-01-20", "credits", null);
+
+        Assert.Equal(new[] { C, B, A }, r.Sessions.Select(s => s.SessionId));
+        Assert.Equal(3.0, r.Sessions[0].Credits);   // the 2026-01-31 subagent request of C is outside the range
+    }
+
+    [Fact]
+    public void Usage_top_omits_credits_without_the_request_multiplier_column()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable(withMultiplier: false);
+        fx.AddSession(A);
+        fx.AddSession(B);
+        fx.AddUsage(B, 0, "m", 1, 1, nanoAiu: 9);
+        fx.AddUsage(A, 0, "m", 1, 1, nanoAiu: 1);
+        var store = new ChatStore(fx.Paths);
+
+        var byAiu = store.UsageTop(null, null, null, null);
+        var byCredits = store.UsageTop(null, null, "credits", null);
+
+        Assert.True(byAiu.Recorded);
+        Assert.Null(byAiu.Note);
+        Assert.Equal(new[] { B, A }, byAiu.Sessions.Select(s => s.SessionId));
+        Assert.All(byAiu.Sessions, s => Assert.Null(s.Credits));
+        Assert.DoesNotContain("credits", JsonOut.Serialize(byAiu));
+
+        Assert.True(byCredits.Recorded);
+        Assert.Equal("credits", byCredits.By);
+        Assert.Contains("request_multiplier", byCredits.Note);
+        Assert.Equal(new[] { A, B }, byCredits.Sessions.Select(s => s.SessionId));
+        Assert.All(byCredits.Sessions, s => Assert.Null(s.Credits));
+    }
+
+    [Fact]
+    public void Usage_top_reports_a_clear_error_when_a_credit_sum_overflows_in_sqlite()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        fx.AddUsage(A, 0, "m", 1, 1, multiplier: double.MaxValue);
+        fx.AddUsage(A, 1, "m", 1, 1, multiplier: double.MaxValue);
+
+        var ex = Assert.Throws<ToolkitException>(() => new ChatStore(fx.Paths).UsageTop(null, null, "credits", null));
+
+        Assert.Equal(ErrorKind.StoreUnavailable, ex.Kind);
+        Assert.Contains("too large", ex.Message);
+    }
+
+    [Fact]
     public void Usage_top_rejects_an_unknown_by_value()
     {
         using var fx = StoreWithUsage();
         var ex = Assert.Throws<ToolkitException>(() => new ChatStore(fx.Paths).UsageTop(null, null, "cost", null));
         Assert.Equal(ErrorKind.Usage, ex.Kind);
+        Assert.Contains("requests, tokens, aiu, credits", ex.Message);
     }
 
     [Fact]
@@ -265,6 +357,26 @@ public class UsageTopTests
     }
 
     [Fact]
+    public void Cli_usage_top_by_credits_prints_credits_in_json_and_text()
+    {
+        using var fx = StoreWithUsage();
+
+        var (exit, output) = Run(fx, "usage-top", "--by", "credits");
+
+        Assert.Equal(0, exit);
+        using var doc = JsonDocument.Parse(output);
+        var root = doc.RootElement;
+        Assert.Equal("credits", root.GetProperty("by").GetString());
+        Assert.Equal(C, root.GetProperty("sessions")[0].GetProperty("session_id").GetString());
+        Assert.Equal(6.0, root.GetProperty("sessions")[0].GetProperty("credits").GetDouble());
+
+        var text = Run(fx, "usage-top", "--by", "credits", "--text").Out;
+        Assert.Contains("usage-top: 3 chat(s) by credits", text);
+        Assert.Contains("nano_aiu 9000, credits 0.5  chat a", text);
+        Assert.Contains("subagent credits are unverified", text);
+    }
+
+    [Fact]
     public void Cli_usage_top_rejects_bad_arguments_with_usage_exit()
     {
         using var fx = StoreWithUsage();
@@ -297,7 +409,7 @@ public class UsageTopTests
         Assert.Equal(0, exit);
         Assert.Contains("usage-top: 3 chat(s) by aiu", output);
         Assert.Contains(A + "  2026-01-05T10:00:00.000Z  1 requests", output);
-        Assert.Contains("nano_aiu 9000  chat a", output);
+        Assert.Contains("nano_aiu 9000, credits 0.5  chat a", output);
         Assert.Contains("coverage: session-store.db only", output);
     }
 

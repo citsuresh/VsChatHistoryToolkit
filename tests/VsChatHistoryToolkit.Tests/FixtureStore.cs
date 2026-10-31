@@ -96,19 +96,29 @@ public sealed class FixtureStore : IDisposable
     }
 
     /// <summary>Creates the per-request usage table with the columns of the real store (synthetic rows only).</summary>
-    public void AddUsageTable(bool dropColumn = false, bool withId = true) => Exec($"""
+    public void AddUsageTable(bool dropColumn = false, bool withId = true, bool withMultiplier = true) => Exec($"""
         CREATE TABLE assistant_usage_events({(withId ? "id INTEGER PRIMARY KEY AUTOINCREMENT, " : "")}session_id TEXT NOT NULL, turn_index INTEGER NOT NULL,
             agent_id TEXT, parent_tool_call_id TEXT, model TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
             cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL, reasoning_tokens INTEGER,
-            {(dropColumn ? "" : "total_nano_aiu INTEGER,")} request_multiplier REAL, duration_ms INTEGER NOT NULL, created_at TEXT NOT NULL)
+            {(dropColumn ? "" : "total_nano_aiu INTEGER,")} {(withMultiplier ? "request_multiplier REAL," : "")} duration_ms INTEGER NOT NULL, created_at TEXT NOT NULL)
         """);
 
+    /// <summary>Adds one request row; <paramref name="multiplier"/> is written only when given, so it also works on a table without request_multiplier.</summary>
     public void AddUsage(string sessionId, int turn, string model, long input, long output, long cacheRead = 0, long cacheWrite = 0,
-        long? reasoning = 0, long? nanoAiu = 0, long durationMs = 100, string createdAt = "2026-01-05T10:06:00.000Z", string? agentId = null)
-        => Exec("INSERT INTO assistant_usage_events(session_id,turn_index,agent_id,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,total_nano_aiu,duration_ms,created_at) " +
-                "VALUES($s,$t,$a,$m,$i,$o,$cr,$cw,$r,$n,$d,$c)",
+        long? reasoning = 0, long? nanoAiu = 0, long durationMs = 100, string createdAt = "2026-01-05T10:06:00.000Z", string? agentId = null,
+        double? multiplier = null)
+    {
+        var ps = new List<(string, object?)>
+        {
             ("$s", sessionId), ("$t", turn), ("$a", agentId), ("$m", model), ("$i", input), ("$o", output), ("$cr", cacheRead),
-            ("$cw", cacheWrite), ("$r", reasoning), ("$n", nanoAiu), ("$d", durationMs), ("$c", createdAt));
+            ("$cw", cacheWrite), ("$r", reasoning), ("$n", nanoAiu), ("$d", durationMs), ("$c", createdAt),
+        };
+        if (multiplier is not null) ps.Add(("$x", multiplier));
+        Exec("INSERT INTO assistant_usage_events(session_id,turn_index,agent_id,model,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,total_nano_aiu,duration_ms,created_at" +
+                (multiplier is null ? "" : ",request_multiplier") + ") " +
+                "VALUES($s,$t,$a,$m,$i,$o,$cr,$cw,$r,$n,$d,$c" + (multiplier is null ? "" : ",$x") + ")",
+            ps.ToArray());
+    }
 
     public void AddFile(string sessionId, string filePath, string? tool = "edit", int? turn = 0, string? firstSeen = "2026-01-05T10:06:00.000Z")
         => Exec("INSERT INTO session_files(session_id,file_path,tool_name,turn_index,first_seen_at) VALUES($s,$p,$t,$i,$f)",

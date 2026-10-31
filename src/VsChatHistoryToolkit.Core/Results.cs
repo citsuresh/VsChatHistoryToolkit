@@ -80,7 +80,9 @@ public sealed record CountItem(string Key, int Sessions);
 /// <summary>
 /// Sums of the stored per-request usage rows. Values are exactly as stored: input_tokens is the whole prompt of each
 /// request (so summing it over a chat counts the re-sent context again every request), and nano_aiu is the stored cost
-/// unit, whose relation to the credits shown in the chat window is not verified.
+/// unit, whose relation to the credits shown in the chat window is not verified. Credits is the sum of request_multiplier
+/// (NULL counts as 0, rounded to 2 decimals); it matched the chat footers for main-chat requests, while subagent credits
+/// are unverified. It is null when the store has no request_multiplier column.
 /// </summary>
 public sealed record UsageTotals(
     long Requests,
@@ -90,6 +92,7 @@ public sealed record UsageTotals(
     long CacheWriteTokens,
     long ReasoningTokens,
     long NanoAiu,
+    double? Credits,
     long DurationMs);
 
 public sealed record UsageModelItem(string Model, UsageTotals Totals);
@@ -145,6 +148,7 @@ public sealed record UsageTopItem(
     long CacheReadTokens,
     long ReasoningTokens,
     long NanoAiu,
+    double? Credits,
     string? LastAt);
 
 /// <summary>Chats ranked by usage. From/To are the normalized UTC bounds that were applied (To is exclusive). Recorded is false when the store has no usable usage table.</summary>
@@ -176,7 +180,8 @@ public sealed record EventsResult(
     long Aborts, long SubagentsStarted, long CompactionCount, IReadOnlyList<EventCompaction> Compactions,
     IReadOnlyList<EventShutdown> Shutdowns) : ToolResult("events");
 
-public sealed record ActivityDayItem(string Day, long Turns, long Chats, long? Requests, long? NanoAiu);
+/// <summary>Requests and NanoAiu are null without a usable usage table; Credits is also null when that table has no request_multiplier column.</summary>
+public sealed record ActivityDayItem(string Day, long Turns, long Chats, long? Requests, long? NanoAiu, double? Credits);
 
 /// <summary>Daily turn and optional usage counts, ordered newest day first.</summary>
 public sealed record ActivityResult(string? From, string? To, int Limit, IReadOnlyList<ActivityDayItem> Days) : ToolResult("activity")

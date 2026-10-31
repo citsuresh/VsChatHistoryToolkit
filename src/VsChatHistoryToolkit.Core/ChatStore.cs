@@ -251,7 +251,7 @@ public sealed class ChatStore
         if (UsageTableReady(conn))
         {
             try { usage = UsageOverviewOf(conn, ref truncated); }
-            catch (SqliteException ex) when (IsOverflow(ex)) { truncated = true; }   // a stored figure is absurdly large: leave usage out rather than fail stats
+            catch (Exception ex) when (IsOverflow(ex)) { truncated = true; }   // a stored figure is absurdly large: leave usage out rather than fail stats
         }
 
         return new StatsResult(sessions, turns, byRepo, byCwd, byMonth, usage) { Truncated = truncated };
@@ -264,44 +264,52 @@ public sealed class ChatStore
     public UsageTopResult UsageTop(string? from, string? to, string? by, int? limit)
     {
         var key = (by ?? "aiu").Trim().ToLowerInvariant();
-        var metric = key switch
-        {
-            "aiu" => "SUM(COALESCE(total_nano_aiu, 0))",
-            "tokens" => "SUM(input_tokens) + SUM(output_tokens)",
-            "requests" => "COUNT(*)",
-            _ => throw new ToolkitException(ErrorKind.Usage, "--by must be one of: requests, tokens, aiu."),
-        };
+        if (key is not ("aiu" or "tokens" or "requests" or "credits"))
+            throw new ToolkitException(ErrorKind.Usage, "--by must be one of: requests, tokens, aiu, credits.");
         var take = Caps.ClampLimit(limit, out var clamped);
         var lo = NormalizeBound(from, "--from", endOfDay: false);
         var hi = NormalizeBound(to, "--to", endOfDay: true);
 
-        try { return UsageTopCore(key, metric, lo, hi, take, clamped); }
-        catch (SqliteException ex) when (IsOverflow(ex))
+        try { return UsageTopCore(key, lo, hi, take, clamped); }
+        catch (Exception ex) when (IsOverflow(ex))
         {
             throw new ToolkitException(ErrorKind.StoreUnavailable,
-                "A usage figure is too large to add up (SQLite integer overflow); the stored values look wrong.");
+                "A usage figure is too large to add up (SQLite integer or real overflow); the stored values look wrong.");
         }
     }
 
-    private UsageTopResult UsageTopCore(string by, string metric, string? from, string? to, int take, bool clamped)
+    private UsageTopResult UsageTopCore(string by, string? from, string? to, int take, bool clamped)
     {
         using var conn = Open();
         if (!UsageTableReady(conn))
             return new UsageTopResult(by, from, to, false,
                 "This store has no usage table (or it has an unexpected shape), so no token figures are available.", take, Array.Empty<UsageTopItem>());
 
-        // metric is one of three constant expressions chosen above, never user text.
+        var credits = CreditsColumnPresent(conn);
+        string? note = null;
+        // metric is one of these constant expressions, never user text.
+        var metric = by switch
+        {
+            "aiu" => "SUM(COALESCE(total_nano_aiu, 0))",
+            "tokens" => "SUM(input_tokens) + SUM(output_tokens)",
+            "requests" => "COUNT(*)",
+            _ => credits ? $"ROUND({CreditsSum}, 2)" : "NULL",
+        };
+        if (by == "credits" && !credits)
+            note = "This store's usage table has no request_multiplier column, so credits are not available; chats are listed by session id.";
+
         using var cmd = conn.CreateCommand();
         cmd.CommandText = $"""
             WITH u AS (
                 SELECT session_id, COUNT(*) AS n, COALESCE(SUM(input_tokens), 0) AS i, COALESCE(SUM(output_tokens), 0) AS o,
                        COALESCE(SUM(cache_read_tokens), 0) AS cr, COALESCE(SUM(reasoning_tokens), 0) AS r,
-                       COALESCE(SUM(total_nano_aiu), 0) AS aiu, MAX(created_at) AS last_at, {metric} AS score
+                       COALESCE(SUM(total_nano_aiu), 0) AS aiu, MAX(created_at) AS last_at, {metric} AS score,
+                       {(credits ? CreditsSum : "NULL")} AS credits
                 FROM assistant_usage_events
                 WHERE ($from IS NULL OR created_at >= $from) AND ($to IS NULL OR created_at < $to)
                 GROUP BY session_id
             )
-            SELECT u.session_id, s.summary, u.n, u.i, u.o, u.cr, u.r, u.aiu, u.last_at
+            SELECT u.session_id, s.summary, u.n, u.i, u.o, u.cr, u.r, u.aiu, u.last_at, u.credits
             FROM u LEFT JOIN sessions s ON s.id = u.session_id
             ORDER BY u.score DESC, u.session_id
             LIMIT $n
@@ -320,11 +328,13 @@ public sealed class ChatStore
                 var sid = Str(r, 0) ?? "";
                 var (title, source, cut) = IsSessionId(sid) ? ResolveTitle(sid, Str(r, 1)) : (null, "none", false);
                 truncated |= cut;
-                list.Add(new UsageTopItem(sid, title, source, r.GetInt64(2), r.GetInt64(3), r.GetInt64(4), r.GetInt64(5), r.GetInt64(6), r.GetInt64(7), Str(r, 8)));
+                var n = r.GetInt64(2);
+                list.Add(new UsageTopItem(sid, title, source, n, r.GetInt64(3), r.GetInt64(4), r.GetInt64(5), r.GetInt64(6), r.GetInt64(7),
+                    credits ? ReadCredits(r, 9, n) : null, Str(r, 8)));
             }
         }
 
-        return new UsageTopResult(by, from, to, true, null, take, list) { Truncated = truncated };
+        return new UsageTopResult(by, from, to, true, note, take, list) { Truncated = truncated };
     }
 
     /// <summary>Returns a bounded summary of selected event metadata for one session.</summary>
@@ -344,10 +354,10 @@ public sealed class ChatStore
         var hi = NormalizeBound(to, "--to", endOfDay: true);
 
         try { return ActivityCore(lo, hi, take, clamped); }
-        catch (SqliteException ex) when (IsOverflow(ex))
+        catch (Exception ex) when (IsOverflow(ex))
         {
             throw new ToolkitException(ErrorKind.StoreUnavailable,
-                "A daily usage figure is too large to add up (SQLite integer overflow); the stored values look wrong.");
+                "A daily usage figure is too large to add up (SQLite integer or real overflow); the stored values look wrong.");
         }
     }
 
@@ -355,11 +365,13 @@ public sealed class ChatStore
     {
         using var conn = Open();
         var hasUsage = ActivityUsageTableReady(conn);
+        var credits = hasUsage && CreditsColumnPresent(conn);
         var usageCte = hasUsage
-            ? """
+            ? $"""
               , usage_days AS (
                   SELECT strftime('%Y-%m-%d', created_at) AS day, COUNT(*) AS requests,
-                         COALESCE(SUM(COALESCE(total_nano_aiu, 0)), 0) AS nano_aiu
+                         COALESCE(SUM(COALESCE(total_nano_aiu, 0)), 0) AS nano_aiu,
+                         {(credits ? CreditsSum : "NULL")} AS credits
                   FROM assistant_usage_events
                   WHERE ($from IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', created_at) >= $from)
                       AND ($to IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', created_at) < $to)
@@ -367,8 +379,9 @@ public sealed class ChatStore
                   GROUP BY day
               )
               """
-            : ", usage_days AS (SELECT NULL AS day, NULL AS requests, NULL AS nano_aiu WHERE 0)";
-        var usageSelect = hasUsage ? "COALESCE(u.requests, 0), COALESCE(u.nano_aiu, 0)" : "NULL, NULL";
+            : ", usage_days AS (SELECT NULL AS day, NULL AS requests, NULL AS nano_aiu, NULL AS credits WHERE 0)";
+        // Column 5 is the day's request count (0 without usage rows) so a NULL credit sum can be told apart from no rows.
+        var usageSelect = hasUsage ? "COALESCE(u.requests, 0), COALESCE(u.nano_aiu, 0), u.credits" : "NULL, NULL, NULL";
 
         using var cmd = conn.CreateCommand();
         cmd.CommandText = $"""
@@ -396,8 +409,9 @@ public sealed class ChatStore
             while (r.Read())
             {
                 if (days.Count == take) { truncated = true; break; }
+                long? requests = r.IsDBNull(3) ? null : r.GetInt64(3);
                 days.Add(new ActivityDayItem(Str(r, 0) ?? "", r.GetInt64(1), r.GetInt64(2),
-                    r.IsDBNull(3) ? null : r.GetInt64(3), r.IsDBNull(4) ? null : r.GetInt64(4)));
+                    requests, r.IsDBNull(4) ? null : r.GetInt64(4), credits ? ReadCredits(r, 5, requests ?? 0) : null));
             }
         }
         return new ActivityResult(from, to, take, days) { Truncated = truncated };
@@ -491,14 +505,19 @@ public sealed class ChatStore
     public UsageResult Usage(string id, bool byTurn)
     {
         try { return UsageCore(id, byTurn); }
-        catch (SqliteException ex) when (IsOverflow(ex))
+        catch (Exception ex) when (IsOverflow(ex))
         {
             throw new ToolkitException(ErrorKind.StoreUnavailable,
-                "A usage figure in this session is too large to add up (SQLite integer overflow); the stored values look wrong.");
+                "A usage figure in this session is too large to add up (SQLite integer or real overflow); the stored values look wrong.");
         }
     }
 
-    private static bool IsOverflow(SqliteException ex) => ex.Message.Contains("integer overflow", StringComparison.OrdinalIgnoreCase);
+    private static bool IsOverflow(Exception ex) =>
+        ex is CreditsOverflowException
+        || (ex is SqliteException s && s.Message.Contains("integer overflow", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>A credit sum that SQLite returned as infinite, or as NULL because it became NaN.</summary>
+    private sealed class CreditsOverflowException : Exception { }
 
     private UsageResult UsageCore(string id, bool byTurn)
     {
@@ -510,24 +529,28 @@ public sealed class ChatStore
             return NoUsage(id, "This store has no usage table (or it has an unexpected shape), so no token figures are available.");
 
         var truncated = false;
+        var credits = CreditsColumnPresent(conn);
+        var aggregates = UsageAggregates(credits);
         UsageTotals? main = null, sub = null;
+        double? mainCredits = null, subCredits = null;   // unrounded, so the total is rounded only once
         string? first = null, last = null;
         long? peakInput = null, lastInput = null;
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = $"""
-                SELECT (agent_id IS NOT NULL) AS sub, {UsageAggregates}, MIN(created_at), MAX(created_at), MAX(input_tokens)
+                SELECT (agent_id IS NOT NULL) AS sub, {aggregates}, MIN(created_at), MAX(created_at), MAX(input_tokens)
                 FROM assistant_usage_events WHERE session_id = $id GROUP BY sub
                 """;
             cmd.Parameters.AddWithValue("$id", id);
             using var r = cmd.ExecuteReader();
             while (r.Read())
             {
-                var totals = ReadTotals(r, 1);
-                if (r.GetInt64(0) == 0) { main = totals; peakInput = r.IsDBNull(11) ? null : r.GetInt64(11); }
-                else sub = totals;
-                first = Earlier(first, Str(r, 9));
-                last = Later(last, Str(r, 10));
+                var totals = ReadTotals(r, 1, credits);
+                double? raw = credits ? ReadRawCredits(r, 9, totals.Requests) : null;
+                if (r.GetInt64(0) == 0) { main = totals; mainCredits = raw; peakInput = r.IsDBNull(12) ? null : r.GetInt64(12); }
+                else { sub = totals; subCredits = raw; }
+                first = Earlier(first, Str(r, 10));
+                last = Later(last, Str(r, 11));
             }
         }
 
@@ -546,18 +569,18 @@ public sealed class ChatStore
             lastInput = v is null || v is DBNull ? null : Convert.ToInt64(v, CultureInfo.InvariantCulture);
         }
 
-        var total = Add(main, sub, ref truncated);
+        var total = Add(main, sub, mainCredits, subCredits, ref truncated);
 
         var byModel = new List<UsageModelItem>();
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = $"""
-                SELECT COALESCE(NULLIF(model, ''), 'unknown') AS m, {UsageAggregates}
+                SELECT COALESCE(NULLIF(model, ''), 'unknown') AS m, {aggregates}
                 FROM assistant_usage_events WHERE session_id = $id GROUP BY m ORDER BY COUNT(*) DESC, m LIMIT $n
                 """;
             cmd.Parameters.AddWithValue("$id", id);
             cmd.Parameters.AddWithValue("$n", Caps.StatsTop + 1);
-            ReadModels(cmd, byModel, ref truncated);
+            ReadModels(cmd, byModel, credits, ref truncated);
         }
 
         List<UsageTurnItem>? turns = null;
@@ -566,7 +589,7 @@ public sealed class ChatStore
             turns = new List<UsageTurnItem>();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = $"""
-                SELECT turn_index, {UsageAggregates}, MAX(CASE WHEN agent_id IS NULL THEN input_tokens END)
+                SELECT turn_index, {aggregates}, MAX(CASE WHEN agent_id IS NULL THEN input_tokens END)
                 FROM assistant_usage_events WHERE session_id = $id GROUP BY turn_index ORDER BY turn_index LIMIT $n
                 """;
             cmd.Parameters.AddWithValue("$id", id);
@@ -575,11 +598,11 @@ public sealed class ChatStore
             while (r.Read())
             {
                 if (turns.Count == Caps.MaxUsageTurns) { truncated = true; break; }
-                turns.Add(new UsageTurnItem(r.GetInt64(0), ReadTotals(r, 1), r.IsDBNull(9) ? null : r.GetInt64(9)));
+                turns.Add(new UsageTurnItem(r.GetInt64(0), ReadTotals(r, 1, credits), r.IsDBNull(10) ? null : r.GetInt64(10)));
             }
         }
 
-        return new UsageResult(id, true, null, total, main ?? Empty, sub ?? Empty, first, last, peakInput, lastInput, byModel, turns)
+        return new UsageResult(id, true, null, total, main ?? EmptyTotals(credits), sub ?? EmptyTotals(credits), first, last, peakInput, lastInput, byModel, turns)
             { Truncated = truncated };
     }
 
@@ -687,11 +710,20 @@ public sealed class ChatStore
 
     // ---- usage helpers ----
 
-    private static readonly UsageTotals Empty = new(0, 0, 0, 0, 0, 0, 0, 0);
+    /// <summary>Zero totals; credits stay null when the store has no request_multiplier column.</summary>
+    private static UsageTotals EmptyTotals(bool credits) => new(0, 0, 0, 0, 0, 0, 0, credits ? 0 : null, 0);
 
-    private const string UsageAggregates =
+    /// <summary>
+    /// Sum of request_multiplier with NULL counted as 0. It is deliberately not wrapped in an outer COALESCE: over at
+    /// least one row it is only NULL when SQLite produced NaN, which <see cref="ReadCredits"/> treats as overflow.
+    /// </summary>
+    private const string CreditsSum = "SUM(COALESCE(request_multiplier, 0))";
+
+    /// <summary>The nine aggregate columns read by <see cref="ReadTotals"/>; the ninth (credits) is NULL without the column.</summary>
+    private static string UsageAggregates(bool credits) =>
         "COUNT(*), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), COALESCE(SUM(cache_read_tokens), 0), " +
-        "COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(total_nano_aiu), 0), COALESCE(SUM(duration_ms), 0)";
+        "COALESCE(SUM(cache_write_tokens), 0), COALESCE(SUM(reasoning_tokens), 0), COALESCE(SUM(total_nano_aiu), 0), COALESCE(SUM(duration_ms), 0), " +
+        (credits ? CreditsSum : "NULL");
 
     private static readonly string[] UsageColumns =
     {
@@ -710,6 +742,9 @@ public sealed class ChatStore
     /// <summary>True when assistant_usage_events has the columns needed for daily activity.</summary>
     private static bool ActivityUsageTableReady(SqliteConnection conn) => HasColumns(conn, "assistant_usage_events", ActivityUsageColumns);
 
+    /// <summary>True when assistant_usage_events has request_multiplier. It is optional: without it credits are null, never 0.</summary>
+    private static bool CreditsColumnPresent(SqliteConnection conn) => HasColumns(conn, "assistant_usage_events", new[] { "request_multiplier" });
+
     /// <summary>True when <paramref name="table"/> exists with every listed column. The table name is a constant, never user input.</summary>
     private static bool HasColumns(SqliteConnection conn, string table, string[] columns)
     {
@@ -721,23 +756,54 @@ public sealed class ChatStore
         return columns.All(have.Contains);
     }
 
-    /// <summary>Reads the eight aggregate columns that start at <paramref name="o"/>.</summary>
-    private static UsageTotals ReadTotals(SqliteDataReader r, int o) =>
-        new(r.GetInt64(o), r.GetInt64(o + 1), r.GetInt64(o + 2), r.GetInt64(o + 3), r.GetInt64(o + 4), r.GetInt64(o + 5), r.GetInt64(o + 6), r.GetInt64(o + 7));
-
-    /// <summary>Adds two totals; a sum that would not fit in a long stops at long.MaxValue and sets <paramref name="saturated"/>.</summary>
-    private static UsageTotals Add(UsageTotals? a, UsageTotals? b, ref bool saturated)
+    /// <summary>Reads the nine aggregate columns that start at <paramref name="o"/> (see <see cref="UsageAggregates"/>).</summary>
+    private static UsageTotals ReadTotals(SqliteDataReader r, int o, bool credits)
     {
-        a ??= Empty; b ??= Empty;
+        var requests = r.GetInt64(o);
+        return new(requests, r.GetInt64(o + 1), r.GetInt64(o + 2), r.GetInt64(o + 3), r.GetInt64(o + 4), r.GetInt64(o + 5), r.GetInt64(o + 6),
+            credits ? ReadCredits(r, o + 8, requests) : null, r.GetInt64(o + 7));
+    }
+
+    /// <summary>
+    /// Reads a <see cref="CreditsSum"/> column, rounded to 2 decimals. NULL means no rows (0) or, over at least one row, a
+    /// NaN sum; that and an infinite sum throw <see cref="CreditsOverflowException"/> like an integer overflow would.
+    /// </summary>
+    private static double ReadCredits(SqliteDataReader r, int i, long requests) =>
+        Math.Round(ReadRawCredits(r, i, requests), 2, MidpointRounding.AwayFromZero);
+
+    /// <summary>Like <see cref="ReadCredits"/> but unrounded, for sums that are added up further before rounding.</summary>
+    private static double ReadRawCredits(SqliteDataReader r, int i, long requests)
+    {
+        if (r.IsDBNull(i)) return requests == 0 ? 0 : throw new CreditsOverflowException();
+        var v = r.GetDouble(i);
+        if (!double.IsFinite(v)) throw new CreditsOverflowException();
+        return v;
+    }
+
+    /// <summary>
+    /// Adds two totals; a sum that would not fit in a long stops at long.MaxValue, and a credit sum that is not finite
+    /// stops at double.MaxValue; either sets <paramref name="saturated"/>. Credits are added from the unrounded
+    /// <paramref name="rawA"/> and <paramref name="rawB"/> and rounded once; they stay null when both are null.
+    /// </summary>
+    private static UsageTotals Add(UsageTotals? a, UsageTotals? b, double? rawA, double? rawB, ref bool saturated)
+    {
+        a ??= EmptyTotals(false); b ??= EmptyTotals(false);
         var s = saturated;
         long Sum(long x, long y)
         {
             try { return checked(x + y); }
             catch (OverflowException) { s = true; return long.MaxValue; }
         }
+        double? credits = null;
+        if (rawA is not null || rawB is not null)
+        {
+            var c = (rawA ?? 0) + (rawB ?? 0);
+            if (double.IsFinite(c)) credits = Math.Round(c, 2, MidpointRounding.AwayFromZero);
+            else { s = true; credits = double.MaxValue; }
+        }
         var t = new UsageTotals(Sum(a.Requests, b.Requests), Sum(a.InputTokens, b.InputTokens), Sum(a.OutputTokens, b.OutputTokens),
             Sum(a.CacheReadTokens, b.CacheReadTokens), Sum(a.CacheWriteTokens, b.CacheWriteTokens), Sum(a.ReasoningTokens, b.ReasoningTokens),
-            Sum(a.NanoAiu, b.NanoAiu), Sum(a.DurationMs, b.DurationMs));
+            Sum(a.NanoAiu, b.NanoAiu), credits, Sum(a.DurationMs, b.DurationMs));
         saturated = s;
         return t;
     }
@@ -746,8 +812,8 @@ public sealed class ChatStore
 
     private static string? Later(string? a, string? b) => a is null ? b : b is null ? a : string.CompareOrdinal(a, b) >= 0 ? a : b;
 
-    /// <summary>Command text must select the model name first, then the eight aggregates, and use LIMIT StatsTop + 1.</summary>
-    private static void ReadModels(SqliteCommand cmd, List<UsageModelItem> into, ref bool truncated)
+    /// <summary>Command text must select the model name first, then the nine aggregates, and use LIMIT StatsTop + 1.</summary>
+    private static void ReadModels(SqliteCommand cmd, List<UsageModelItem> into, bool credits, ref bool truncated)
     {
         using var r = cmd.ExecuteReader();
         while (r.Read())
@@ -755,39 +821,41 @@ public sealed class ChatStore
             if (into.Count == Caps.StatsTop) { truncated = true; break; }
             var name = TextUtil.Cap(TextUtil.Collapse(r.GetString(0)), Caps.TitleChars, out var cut);
             truncated |= cut;
-            into.Add(new UsageModelItem(name, ReadTotals(r, 1)));
+            into.Add(new UsageModelItem(name, ReadTotals(r, 1, credits)));
         }
     }
 
     private static UsageOverview UsageOverviewOf(SqliteConnection conn, ref bool truncated)
     {
+        var credits = CreditsColumnPresent(conn);
+        var aggregates = UsageAggregates(credits);
         UsageTotals total;
         int sessions;
         using (var cmd = conn.CreateCommand())
         {
-            cmd.CommandText = $"SELECT COUNT(DISTINCT session_id), {UsageAggregates} FROM assistant_usage_events";
+            cmd.CommandText = $"SELECT COUNT(DISTINCT session_id), {aggregates} FROM assistant_usage_events";
             using var r = cmd.ExecuteReader();
             r.Read();
             sessions = r.GetInt32(0);
-            total = ReadTotals(r, 1);
+            total = ReadTotals(r, 1, credits);
         }
 
         var byModel = new List<UsageModelItem>();
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = $"""
-                SELECT COALESCE(NULLIF(model, ''), 'unknown') AS m, {UsageAggregates}
+                SELECT COALESCE(NULLIF(model, ''), 'unknown') AS m, {aggregates}
                 FROM assistant_usage_events GROUP BY m ORDER BY COUNT(*) DESC, m LIMIT $n
                 """;
             cmd.Parameters.AddWithValue("$n", Caps.StatsTop + 1);
-            ReadModels(cmd, byModel, ref truncated);
+            ReadModels(cmd, byModel, credits, ref truncated);
         }
 
         var byMonth = new List<UsageMonthItem>();
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = $"""
-                SELECT COALESCE(NULLIF(substr(created_at, 1, 7), ''), 'unknown') AS k, {UsageAggregates}
+                SELECT COALESCE(NULLIF(substr(created_at, 1, 7), ''), 'unknown') AS k, {aggregates}
                 FROM assistant_usage_events GROUP BY k ORDER BY 1 DESC LIMIT $n
                 """;
             cmd.Parameters.AddWithValue("$n", Caps.StatsTop + 1);
@@ -795,7 +863,7 @@ public sealed class ChatStore
             while (r.Read())
             {
                 if (byMonth.Count == Caps.StatsTop) { truncated = true; break; }
-                byMonth.Add(new UsageMonthItem(TextUtil.Cap(TextUtil.Collapse(r.GetString(0)), Caps.TitleChars, out _), ReadTotals(r, 1)));
+                byMonth.Add(new UsageMonthItem(TextUtil.Cap(TextUtil.Collapse(r.GetString(0)), Caps.TitleChars, out _), ReadTotals(r, 1, credits)));
             }
         }
 

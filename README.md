@@ -40,7 +40,7 @@ chathistory show <id>
 chathistory turns <id> [--index I | --range A-B] [--max-chars N]
 chathistory checkpoints <id> [--full]
 chathistory usage <id> [--by-turn]
-chathistory usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu] [--limit N]
+chathistory usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu|credits] [--limit N]
 chathistory events <id>
 chathistory activity [--from DATE] [--to DATE] [--limit N]
 chathistory files <id> [--limit N]
@@ -52,6 +52,10 @@ chathistory undo-rename <id> [--force] [--dry-run]
 ```
 
 A renamed title appears only after Visual Studio restarts.
+
+### Credits
+
+`usage`, `usage-top`, `activity` and `stats` report `credits`: the sum of `request_multiplier` over the stored requests (for example 11 requests of multiplier 1.0 give 11.0, 4 requests of multiplier 15.0 give 60.0). For main-chat requests this matched the credits shown in the chat footers in 6 of 6 turns checked. Subagent requests carry stored multipliers too, but the session-end data shows subagent requests cost 0.0, so subagent credits are unverified: quote the `main` figure of `usage`. When the store has no `request_multiplier` column, `credits` is omitted.
 
 ## Projects
 

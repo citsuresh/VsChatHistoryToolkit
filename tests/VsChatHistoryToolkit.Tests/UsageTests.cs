@@ -322,6 +322,210 @@ public class UsageTests
         Assert.Equal(before, File.ReadAllBytes(fx.DbPath));
     }
 
+    // ---- credits ----
+
+    /// <summary>A: turn 0 has 11 main requests of 1.0, turn 1 has 4 main requests of 15.0 and 2 subagent requests of 1.0 on another model.</summary>
+    private static FixtureStore StoreWithCredits()
+    {
+        var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        for (var i = 0; i < 11; i++) fx.AddUsage(A, 0, "model-x", 1, 1, multiplier: 1.0);
+        for (var i = 0; i < 4; i++) fx.AddUsage(A, 1, "model-x", 1, 1, multiplier: 15.0, createdAt: "2026-02-01T09:00:00.000Z");
+        for (var i = 0; i < 2; i++) fx.AddUsage(A, 1, "model-y", 1, 1, multiplier: 1.0, agentId: "agent-1", createdAt: "2026-02-01T09:00:00.000Z");
+        return fx;
+    }
+
+    [Fact]
+    public void Usage_credits_sum_request_multiplier_for_total_main_subagents_models_and_turns()
+    {
+        using var fx = StoreWithCredits();
+
+        var u = new ChatStore(fx.Paths).Usage(A, byTurn: true);
+
+        Assert.True(u.Recorded);
+        Assert.Equal(73.0, u.Total!.Credits);
+        Assert.Equal(71.0, u.Main!.Credits);
+        Assert.Equal(2.0, u.Subagents!.Credits);
+        Assert.Equal(new double?[] { 71.0, 2.0 }, u.ByModel.Select(m => m.Totals.Credits));
+        Assert.Equal(new double?[] { 11.0, 62.0 }, u.ByTurn!.Select(t => t.Totals.Credits));
+        Assert.False(u.Truncated);
+    }
+
+    [Fact]
+    public void Usage_credits_count_a_null_multiplier_as_zero_and_round_to_two_decimals()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        fx.AddSession(B);
+        fx.AddUsage(A, 0, "m", 1, 1, multiplier: 0.125);
+        fx.AddUsage(A, 0, "m", 1, 1);
+        fx.AddUsage(A, 1, "m", 1, 1, multiplier: 1.0 / 3);
+        fx.AddUsage(B, 0, "m", 1, 1);
+
+        var store = new ChatStore(fx.Paths);
+        var a = store.Usage(A, byTurn: true);
+        var b = store.Usage(B, byTurn: false);
+
+        Assert.Equal(0.46, a.Total!.Credits);
+        Assert.Equal(new double?[] { 0.13, 0.33 }, a.ByTurn!.Select(t => t.Totals.Credits));
+        Assert.Equal(0.0, a.Subagents!.Credits);
+        Assert.Equal(0.0, b.Total!.Credits);
+        Assert.Contains("\"credits\":0", JsonOut.Serialize(b));
+    }
+
+    [Fact]
+    public void Usage_and_stats_omit_credits_when_the_table_has_no_request_multiplier_column()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable(withMultiplier: false);
+        fx.AddSession(A);
+        fx.AddUsage(A, 0, "m", 10, 1, nanoAiu: 5);
+        fx.AddUsage(A, 1, "m", 20, 1, nanoAiu: 6, agentId: "agent-1");
+
+        var store = new ChatStore(fx.Paths);
+        var u = store.Usage(A, byTurn: true);
+        var s = store.Stats();
+
+        Assert.True(u.Recorded);
+        Assert.Equal(2, u.Total!.Requests);
+        Assert.Equal(11, u.Total.NanoAiu);
+        Assert.Null(u.Total.Credits);
+        Assert.Null(u.Main!.Credits);
+        Assert.Null(u.Subagents!.Credits);
+        Assert.All(u.ByModel, m => Assert.Null(m.Totals.Credits));
+        Assert.All(u.ByTurn!, t => Assert.Null(t.Totals.Credits));
+        Assert.DoesNotContain("credits", JsonOut.Serialize(u));
+
+        Assert.NotNull(s.Usage);
+        Assert.Null(s.Usage!.Total.Credits);
+        Assert.DoesNotContain("credits", JsonOut.Serialize(s));
+
+        Assert.DoesNotContain("credits", Run(fx, "usage", A, "--text").Out);
+    }
+
+    [Fact]
+    public void Usage_main_only_session_without_the_column_keeps_subagent_credits_null()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable(withMultiplier: false);
+        fx.AddSession(A);
+        fx.AddUsage(A, 0, "m", 10, 1);
+
+        var u = new ChatStore(fx.Paths).Usage(A, false);
+
+        Assert.Equal(0, u.Subagents!.Requests);
+        Assert.Null(u.Subagents.Credits);
+    }
+
+    [Fact]
+    public void Usage_total_credits_are_rounded_once_and_match_the_stats_total()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        fx.AddUsage(A, 0, "model-a", 1, 1, multiplier: 0.125);
+        fx.AddUsage(A, 0, "model-b", 1, 1, multiplier: 0.125, agentId: "agent-1");
+
+        var store = new ChatStore(fx.Paths);
+        var u = store.Usage(A, false);
+        var s = store.Stats();
+
+        Assert.Equal(0.13, u.Main!.Credits);
+        Assert.Equal(0.13, u.Subagents!.Credits);
+        Assert.Equal(0.25, u.Total!.Credits);
+        Assert.Equal(s.Usage!.Total.Credits, u.Total.Credits);
+    }
+
+    [Fact]
+    public void Usage_credits_overflow_in_sqlite_is_a_clear_error_and_stats_drops_the_section()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        fx.AddUsage(A, 0, "m", 1, 1, multiplier: double.MaxValue);
+        fx.AddUsage(A, 1, "m", 1, 1, multiplier: double.MaxValue);
+
+        var ex = Assert.Throws<ToolkitException>(() => new ChatStore(fx.Paths).Usage(A, false));
+        Assert.Equal(ErrorKind.StoreUnavailable, ex.Kind);
+        Assert.Contains("too large", ex.Message);
+
+        var stats = new ChatStore(fx.Paths).Stats();
+        Assert.Null(stats.Usage);
+        Assert.True(stats.Truncated);
+    }
+
+    [Fact]
+    public void Usage_credits_that_cancel_to_not_a_number_in_sqlite_are_an_overflow_error()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        // SQLite turns a NaN sum (+infinity plus -infinity) into NULL; over stored rows that must not read as 0 credits.
+        fx.AddUsage(A, 0, "m", 1, 1, multiplier: double.PositiveInfinity);
+        fx.AddUsage(A, 0, "m", 1, 1, multiplier: double.NegativeInfinity);
+
+        var ex = Assert.Throws<ToolkitException>(() => new ChatStore(fx.Paths).Usage(A, false));
+
+        Assert.Equal(ErrorKind.StoreUnavailable, ex.Kind);
+    }
+
+    [Fact]
+    public void Usage_total_credits_stop_at_the_maximum_and_are_flagged_when_main_plus_subagents_overflow()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        // Different models so no single SQL SUM overflows; only the main + subagent addition does.
+        fx.AddUsage(A, 0, "model-a", 1, 1, multiplier: double.MaxValue);
+        fx.AddUsage(A, 0, "model-b", 1, 1, multiplier: double.MaxValue, agentId: "agent-1");
+
+        var u = new ChatStore(fx.Paths).Usage(A, false);
+
+        Assert.Equal(double.MaxValue, u.Total!.Credits);
+        Assert.Equal(double.MaxValue, u.Main!.Credits);
+        Assert.True(u.Truncated);
+        JsonOut.Serialize(u);   // must not throw on a non-finite number
+    }
+
+    [Fact]
+    public void Stats_includes_credits_in_total_models_and_months()
+    {
+        using var fx = StoreWithCredits();
+
+        var s = new ChatStore(fx.Paths).Stats();
+
+        Assert.Equal(73.0, s.Usage!.Total.Credits);
+        Assert.Equal(new double?[] { 71.0, 2.0 }, s.Usage.ByModel.Select(m => m.Totals.Credits));
+        Assert.Equal(new double?[] { 62.0, 11.0 }, s.Usage.ByMonth.Select(m => m.Totals.Credits));
+    }
+
+    [Fact]
+    public void Cli_usage_json_and_text_show_credits()
+    {
+        using var fx = StoreWithCredits();
+
+        var (exit, output) = Run(fx, "usage", A, "--by-turn");
+
+        Assert.Equal(0, exit);
+        using var doc = JsonDocument.Parse(output);
+        var root = doc.RootElement;
+        Assert.Equal(73.0, root.GetProperty("total").GetProperty("credits").GetDouble());
+        Assert.Equal(71.0, root.GetProperty("main").GetProperty("credits").GetDouble());
+        Assert.Equal(2.0, root.GetProperty("subagents").GetProperty("credits").GetDouble());
+        Assert.Equal(62.0, root.GetProperty("by_turn")[1].GetProperty("totals").GetProperty("credits").GetDouble());
+
+        var text = Run(fx, "usage", A, "--text").Out;
+        Assert.Contains("main:      15 requests", text);
+        Assert.Contains(", credits 71.0,", text);
+        Assert.Contains(", credits 2.0,", text);
+        Assert.Contains("subagent credits are unverified", text);
+
+        Assert.Contains("total: 17 requests", Run(fx, "stats", "--text").Out);
+        Assert.Contains("credits 73.0", Run(fx, "stats", "--text").Out);
+    }
+
     // ---- stats ----
 
     [Fact]

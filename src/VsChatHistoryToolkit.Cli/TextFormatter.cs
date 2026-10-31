@@ -77,13 +77,16 @@ public static class TextFormatter
                 foreach (var m in s.ByModel) Line(sb,$"  model {m.Model}: {UsageLine(m.Totals)}");
                 foreach (var t in s.ByTurn ?? Array.Empty<UsageTurnItem>()) Line(sb,$"  turn {t.TurnIndex}: {UsageLine(t.Totals)}, main peak in {Num(t.PeakInputTokens)}");
                 Line(sb,"  (nano_aiu is the stored cost unit; input tokens count the re-sent context on every request)");
+                if (s.Total!.Credits is not null) Line(sb, CreditsNote);
                 break;
             case UsageTopResult s:
                 Line(sb,$"usage-top: {s.Count} chat(s) by {s.By}{(s.From is null ? "" : $" from {s.From}")}{(s.To is null ? "" : $" before {s.To}")}");
                 if (!s.Recorded) { Line(sb,$"  {s.Note}"); break; }
+                if (s.Note is not null) Line(sb,$"  {s.Note}");
                 foreach (var x in s.Sessions)
-                    Line(sb,$"  {x.SessionId}  {x.LastAt ?? "?"}  {x.Requests} requests, in {x.InputTokens} (cache read {x.CacheReadTokens}), out {x.OutputTokens}, reasoning {x.ReasoningTokens}, nano_aiu {x.NanoAiu}  {x.Title ?? "(no title)"}");
+                    Line(sb,$"  {x.SessionId}  {x.LastAt ?? "?"}  {x.Requests} requests, in {x.InputTokens} (cache read {x.CacheReadTokens}), out {x.OutputTokens}, reasoning {x.ReasoningTokens}, nano_aiu {x.NanoAiu}{Credits(x.Credits)}  {x.Title ?? "(no title)"}");
                 Line(sb,"  (nano_aiu is the stored cost unit; input tokens count the re-sent context on every request)");
+                if (s.Sessions.Any(x => x.Credits is not null)) Line(sb, CreditsNote);
                 break;
             case DoctorResult s:
                 Line(sb,"doctor (read-only)");
@@ -123,7 +126,7 @@ public static class TextFormatter
             case ActivityResult s:
                 Line(sb,$"activity: {s.Count} day(s){(s.From is null ? "" : $" from {s.From}")}{(s.To is null ? "" : $" before {s.To}")}");
                 foreach (var d in s.Days)
-                    Line(sb,$"  {d.Day}: {d.Turns} turns, {d.Chats} chats{(d.Requests is null ? "" : $", {d.Requests} requests, nano_aiu {Num(d.NanoAiu)}")}");
+                    Line(sb,$"  {d.Day}: {d.Turns} turns, {d.Chats} chats{(d.Requests is null ? "" : $", {d.Requests} requests, nano_aiu {Num(d.NanoAiu)}{Credits(d.Credits)}")}");
                 break;
             case FilesResult s:
                 Line(sb,$"files: {s.Count} for {s.SessionId}");
@@ -178,7 +181,14 @@ public static class TextFormatter
     }
 
     private static string UsageLine(UsageTotals t) =>
-        $"{t.Requests} requests, in {t.InputTokens} (cache read {t.CacheReadTokens}, cache write {t.CacheWriteTokens}), out {t.OutputTokens}, reasoning {t.ReasoningTokens}, nano_aiu {t.NanoAiu}, {t.DurationMs} ms";
+        $"{t.Requests} requests, in {t.InputTokens} (cache read {t.CacheReadTokens}, cache write {t.CacheWriteTokens}), out {t.OutputTokens}, reasoning {t.ReasoningTokens}, nano_aiu {t.NanoAiu}{Credits(t.Credits)}, {t.DurationMs} ms";
+
+    /// <summary>", credits N" with at least one decimal (11.0, 0.25), or nothing when the store has no request_multiplier column.</summary>
+    private static string Credits(double? c) =>
+        c is { } v ? ", credits " + v.ToString("0.0#", System.Globalization.CultureInfo.InvariantCulture) : "";
+
+    private const string CreditsNote =
+        "  (credits sum request_multiplier; the main-chat figure matched the chat footers, subagent credits are unverified)";
 
     private static string Num(long? n) => n?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-";
 
