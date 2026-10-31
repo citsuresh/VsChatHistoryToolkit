@@ -26,6 +26,8 @@ public static class Caps
 
     public const int MaxUsageTurns = 100;
 
+    public const int FilePathChars = 400;
+
     public const int RenameTitleMaxLength = 120;
     public const int ActiveWindowMinutes = 10;
 

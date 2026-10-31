@@ -32,6 +32,8 @@ public class CliTests
             new[] { "show", A },
             new[] { "turns", A },
             new[] { "checkpoints", A },
+            new[] { "files", A },
+            new[] { "files", "--path", "repo" },
             new[] { "stats" },
         })
         {

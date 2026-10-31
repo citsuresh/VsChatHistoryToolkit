@@ -18,6 +18,8 @@ public static class CliRunner
           turns <id> [--index I | --range A-B] [--max-chars N]
           checkpoints <id> [--full]
           usage <id> [--by-turn]
+          files <id> [--limit N]
+          files --path <text> [--limit N]
           stats
           rename <id> "<title>" [--force] [--dry-run]
           undo-rename <id> [--force] [--dry-run]
@@ -100,6 +102,15 @@ public static class CliRunner
 
             case "usage":
                 return store.Usage(a.Require(1, "usage <id> [--by-turn]")[0], a.Flag("by-turn"));
+
+            case "files":
+            {
+                const string filesUsage = "files <id> [--limit N]  or  files --path <text> [--limit N]";
+                var path = a.Option("path");
+                if (path is null) return store.Files(a.Require(1, filesUsage)[0], a.IntOption("limit"));
+                a.Require(0, filesUsage);
+                return store.FilesByPath(path, a.IntOption("limit"));
+            }
 
             case "stats":
                 a.Require(0, "stats");

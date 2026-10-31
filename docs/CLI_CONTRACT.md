@@ -50,6 +50,8 @@ JSON mode: printed to stdout. `--text` mode: printed to stderr as `error (<code>
 | Checkpoint text per call | 60 000 characters |
 | `stats` rows per group (also `usage` by model / by month) | 25 |
 | `usage --by-turn` turns | 100 |
+| `files` file path (also the echoed `--path` text) | 400 characters |
+| `files` tool name | 160 characters |
 
 Every character cap cuts the text to that many characters and appends one ellipsis character when it cuts, so a capped string can be one character longer than the cap. Caller values above a maximum are clamped and `truncated` is set. Whole chats are never printed.
 
@@ -61,7 +63,7 @@ Words and numbers only; punctuation separates terms and every term is quoted for
 `hits[]`: `session_id` (read from the `search_index.session_id` column; null only if that column is empty), `source_type`, `source_id`, `snippet`. Also `query`, `terms`, `limit`, `count`.
 
 ### `sessions [--repo] [--cwd] [--branch] [--from] [--to] [--limit N]`
-`--repo/--cwd/--branch`: case-insensitive "contains". `--from/--to`: `yyyy-MM-dd` or ISO-8601 (UTC); a date-only `--to` includes that whole day. They filter on the session end (last turn, falling back to `created_at` when there are no turns). Newest first.
+`--repo/--cwd/--branch`: "contains", case-insensitive for ASCII letters (SQLite `LIKE`; other letters match only in the same case).
 
 `sessions[]`: `id`, `title`, `title_source` (`name` = workspace.yaml `name:`, `summary`, or `none`), `repository`, `cwd`, `branch`, `start` (`created_at`), `end` (`MAX(turns.timestamp)`, UTC ISO string, omitted without turns), `turn_count`.
 
@@ -75,12 +77,19 @@ Words and numbers only; punctuation separates terms and every term is quoted for
 Default: `number`, `title`, `overview`, `created_at`. With `--full` also `history`, `work_done`, `technical_details`, `important_files`, `next_steps`.
 
 ### `usage <id> [--by-turn]`
-Token and cost figures of one session, summed from the per-request rows of the `assistant_usage_events` table (read-only, like every read). `recorded` is `true` when the session has rows; `total`, `main` (requests without an `agent_id`) and `subagents` (requests with one) are usage totals; `first_at` / `last_at` are the earliest and latest `created_at`; `by_model[]` (`{model, totals}`, busiest first, top 25); with `--by-turn`, `by_turn[]` (`{turn_index, totals}`, ordered, at most 100, `truncated` set when more).
+and the `input_tokens` of the latest main request (by `created_at`, then `rowid`)
 
 A usage totals object has `requests`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `nano_aiu`, `duration_ms`. Missing numbers count as 0. If adding the main and subagent figures would overflow a 64-bit integer, that figure stops at the maximum and `truncated` is set. If SQLite itself overflows while summing the stored rows, `usage` fails with `store_unavailable` (exit 3) and `stats` leaves its `usage` section out and sets `truncated`. Values are exactly as stored:
 - `input_tokens` is the whole prompt of each request, so summing it over a chat counts the re-sent context again on every request; it is a measure of tokens processed, not of the chat's length. In the real store `cache_read_tokens` plus `cache_write_tokens` never exceeded `input_tokens` in any row, which suggests (not proven) that input includes the cached tokens.
 - `nano_aiu` is the stored cost unit (`total_nano_aiu`). Its relation to the credits shown in the chat window has not been verified, so it is reported as stored and never converted.
 - A store without the table (or without a column this tool reads) and a session without rows are normal answers: `recorded` is `false` and `note` says why. An unknown session id is `not_found` (exit 2).
+
+### `files <id> [--limit N]` and `files --path <text> [--limit N]`
+Files edited or created in chats, read from the `session_files` table (read-only). Exactly one of `<id>` or `--path` is required; neither, both, or an empty `--path` is a `usage` error (exit 1). Both forms print `"command": "files"`.
+
+- `files <id>`: `session_id`, `recorded`, `note`, `limit`, `count`, `files[]` (`file_path`, `tool_name`, `turn_index`, `first_seen_at`), ordered by `turn_index` then row `id`, at most `--limit` rows (`truncated` set when more). An unknown session id is `not_found` (exit 2).
+contains the text ("contains", case-insensitive for ASCII letters; `%`, `_` and `\` are matched literally, as in `sessions`).
+- A store without the `session_files` table (or without a column this tool reads: `id`, `session_id`, `file_path`, `tool_name`, `turn_index`, `first_seen_at`), and for `files <id>` a chat without rows, are normal answers: `recorded` is `false` and `note` says why.
 
 ### `stats`
 `total_sessions`, `total_turns`, `by_repository[]`, `by_cwd[]`, `by_month[]` (each `{key, sessions}`; month is the session start `yyyy-MM`; empty values are `unknown`). When the usage table exists, also `usage`: `sessions_with_usage`, `total` (usage totals over all requests), `by_model[]` (top 25) and `by_month[]` (`{month, totals}` from each request's `created_at`, newest first, top 25). It is omitted when the table is absent or lacks a column this tool reads.

@@ -279,10 +279,11 @@ public sealed class ChatStore
         var truncated = false;
         UsageTotals? main = null, sub = null;
         string? first = null, last = null;
+        long? peakInput = null, lastInput = null;
         using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = $"""
-                SELECT (agent_id IS NOT NULL) AS sub, {UsageAggregates}, MIN(created_at), MAX(created_at)
+                SELECT (agent_id IS NOT NULL) AS sub, {UsageAggregates}, MIN(created_at), MAX(created_at), MAX(input_tokens)
                 FROM assistant_usage_events WHERE session_id = $id GROUP BY sub
                 """;
             cmd.Parameters.AddWithValue("$id", id);
@@ -290,7 +291,8 @@ public sealed class ChatStore
             while (r.Read())
             {
                 var totals = ReadTotals(r, 1);
-                if (r.GetInt64(0) == 0) main = totals; else sub = totals;
+                if (r.GetInt64(0) == 0) { main = totals; peakInput = r.IsDBNull(11) ? null : r.GetInt64(11); }
+                else sub = totals;
                 first = Earlier(first, Str(r, 9));
                 last = Later(last, Str(r, 10));
             }
@@ -298,6 +300,18 @@ public sealed class ChatStore
 
         if (main is null && sub is null)
             return NoUsage(id, "No usage rows are recorded for this session.");
+
+        if (main is not null)
+        {
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT input_tokens FROM assistant_usage_events WHERE session_id = $id AND agent_id IS NULL
+                ORDER BY created_at DESC, rowid DESC LIMIT 1
+                """;
+            cmd.Parameters.AddWithValue("$id", id);
+            var v = cmd.ExecuteScalar();
+            lastInput = v is null || v is DBNull ? null : Convert.ToInt64(v, CultureInfo.InvariantCulture);
+        }
 
         var total = Add(main, sub, ref truncated);
 
@@ -319,7 +333,7 @@ public sealed class ChatStore
             turns = new List<UsageTurnItem>();
             using var cmd = conn.CreateCommand();
             cmd.CommandText = $"""
-                SELECT turn_index, {UsageAggregates}
+                SELECT turn_index, {UsageAggregates}, MAX(CASE WHEN agent_id IS NULL THEN input_tokens END)
                 FROM assistant_usage_events WHERE session_id = $id GROUP BY turn_index ORDER BY turn_index LIMIT $n
                 """;
             cmd.Parameters.AddWithValue("$id", id);
@@ -328,11 +342,114 @@ public sealed class ChatStore
             while (r.Read())
             {
                 if (turns.Count == Caps.MaxUsageTurns) { truncated = true; break; }
-                turns.Add(new UsageTurnItem(r.GetInt64(0), ReadTotals(r, 1)));
+                turns.Add(new UsageTurnItem(r.GetInt64(0), ReadTotals(r, 1), r.IsDBNull(9) ? null : r.GetInt64(9)));
             }
         }
 
-        return new UsageResult(id, true, null, total, main ?? Empty, sub ?? Empty, first, last, byModel, turns) { Truncated = truncated };
+        return new UsageResult(id, true, null, total, main ?? Empty, sub ?? Empty, first, last, peakInput, lastInput, byModel, turns)
+            { Truncated = truncated };
+    }
+
+    /// <summary>
+    /// Files edited or created in one chat, from session_files, ordered by turn then row id. A store without that table
+    /// (or with an unexpected shape), or a chat without rows, is a normal answer (Recorded = false), not an error.
+    /// </summary>
+    public FilesResult Files(string id, int? limit)
+    {
+        StorePaths.ValidateSessionId(id);
+        var take = Caps.ClampLimit(limit, out var clamped);
+        using var conn = Open();
+        EnsureSessionExists(conn, id);
+
+        if (!FilesTableReady(conn))
+            return new FilesResult(id, false, NoFilesTable, take, Array.Empty<FileItem>());
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT file_path, tool_name, turn_index, first_seen_at FROM session_files
+            WHERE session_id = $id ORDER BY turn_index, id LIMIT $n
+            """;
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$n", take + 1);
+
+        var truncated = clamped;
+        var items = new List<FileItem>();
+        using (var r = cmd.ExecuteReader())
+        {
+            while (r.Read())
+            {
+                if (items.Count == take) { truncated = true; break; }
+                var path = TextUtil.Cap(Str(r, 0) ?? "", Caps.FilePathChars, out var pathCut);   // as stored: a listed path must work as --path
+                var tool = Str(r, 1);
+                var toolCut = false;
+                if (tool is not null) tool = TextUtil.Cap(TextUtil.Collapse(tool), Caps.TitleChars, out toolCut);
+                truncated |= pathCut | toolCut;
+                items.Add(new FileItem(path, tool, r.IsDBNull(2) ? null : r.GetInt64(2), Str(r, 3)));
+            }
+        }
+
+        if (items.Count == 0)
+            return new FilesResult(id, false, "No edited or created files are recorded for this session.", take, items) { Truncated = truncated };
+
+        return new FilesResult(id, true, null, take, items) { Truncated = truncated };
+    }
+
+    /// <summary>
+    /// Chats that touched a file whose path contains <paramref name="path"/> (case-insensitive), one row per chat,
+    /// newest touch first. A store without a usable session_files table is a normal answer (Recorded = false).
+    /// </summary>
+    public FilesByPathResult FilesByPath(string path, int? limit)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ToolkitException(ErrorKind.Usage, "--path needs some text to look for.");
+        var take = Caps.ClampLimit(limit, out var clamped);
+        var shownPath = TextUtil.Cap(path.Trim(), Caps.FilePathChars, out var queryCut);
+
+        using var conn = Open();
+        if (!FilesTableReady(conn))
+            return new FilesByPathResult(shownPath, false, NoFilesTable, take, Array.Empty<FileSessionItem>()) { Truncated = queryCut };
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT f.session_id, s.summary, COUNT(DISTINCT f.file_path), MAX(f.turn_index), MAX(f.first_seen_at) AS last_seen
+            FROM session_files f LEFT JOIN sessions s ON s.id = f.session_id
+            WHERE f.file_path LIKE $p ESCAPE '\'
+            GROUP BY f.session_id
+            ORDER BY last_seen DESC, f.session_id
+            LIMIT $n
+            """;
+        cmd.Parameters.AddWithValue("$p", Contains(path));
+        cmd.Parameters.AddWithValue("$n", take + 1);
+
+        var truncated = clamped || queryCut;
+        var list = new List<FileSessionItem>();
+        using (var r = cmd.ExecuteReader())
+        {
+            while (r.Read())
+            {
+                if (list.Count == take) { truncated = true; break; }
+                var sid = Str(r, 0) ?? "";
+                // Ids come from the store; only well-formed ones are used to look for a workspace.yaml title.
+                var (title, source, cut) = IsSessionId(sid) ? ResolveTitle(sid, Str(r, 1)) : (null, "none", false);
+                truncated |= cut;
+                list.Add(new FileSessionItem(sid, title, source, r.GetInt32(2), r.IsDBNull(3) ? null : r.GetInt64(3), Str(r, 4)));
+            }
+        }
+
+        return new FilesByPathResult(shownPath, true, null, take, list) { Truncated = truncated };
+    }
+
+    private const string NoFilesTable =
+        "This store has no session_files table (or it has an unexpected shape), so no edited files are available.";
+
+    private static readonly string[] FilesColumns = { "id", "session_id", "file_path", "tool_name", "turn_index", "first_seen_at" };
+
+    private static bool FilesTableReady(SqliteConnection conn) => HasColumns(conn, "session_files", FilesColumns);
+
+    private static bool IsSessionId(string id)
+    {
+        try { StorePaths.ValidateSessionId(id); return true; }
+        catch (ToolkitException) { return false; }
     }
 
     // ---- usage helpers ----
@@ -350,17 +467,20 @@ public sealed class ChatStore
     };
 
     private static UsageResult NoUsage(string id, string note) =>
-        new(id, false, note, null, null, null, null, null, Array.Empty<UsageModelItem>(), null);
+        new(id, false, note, null, null, null, null, null, null, null, Array.Empty<UsageModelItem>(), null);
 
     /// <summary>True when assistant_usage_events exists with every column this tool reads.</summary>
-    private static bool UsageTableReady(SqliteConnection conn)
+    private static bool UsageTableReady(SqliteConnection conn) => HasColumns(conn, "assistant_usage_events", UsageColumns);
+
+    /// <summary>True when <paramref name="table"/> exists with every listed column. The table name is a constant, never user input.</summary>
+    private static bool HasColumns(SqliteConnection conn, string table, string[] columns)
     {
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT name FROM pragma_table_info('assistant_usage_events')";
+        cmd.CommandText = $"SELECT name FROM pragma_table_info('{table}')";
         var have = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         using var r = cmd.ExecuteReader();
         while (r.Read()) have.Add(r.GetString(0));
-        return UsageColumns.All(have.Contains);
+        return columns.All(have.Contains);
     }
 
     /// <summary>Reads the eight aggregate columns that start at <paramref name="o"/>.</summary>

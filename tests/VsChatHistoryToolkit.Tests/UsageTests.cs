@@ -52,6 +52,108 @@ public class UsageTests
     }
 
     [Fact]
+    public void Usage_reports_peak_and_last_prompt_size_of_main_requests_only()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        // Inserted out of time order, so "last" must follow created_at rather than the row id.
+        fx.AddUsage(A, 1, "m", 3000, 1, createdAt: "2026-01-05T10:02:00.000Z");
+        fx.AddUsage(A, 0, "m", 5000, 1, createdAt: "2026-01-05T10:01:00.000Z");
+        fx.AddUsage(A, 1, "m", 9000, 1, createdAt: "2026-01-05T10:03:00.000Z", agentId: "agent-1");
+
+        var u = new ChatStore(fx.Paths).Usage(A, byTurn: false);
+
+        Assert.Equal(5000, u.PeakInputTokens);
+        Assert.Equal(3000, u.LastInputTokens);
+    }
+
+    [Fact]
+    public void Usage_last_prompt_size_breaks_a_created_at_tie_by_the_latest_row()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        fx.AddUsage(A, 0, "m", 700, 1, createdAt: "2026-01-05T10:00:00.000Z");
+        fx.AddUsage(A, 0, "m", 200, 1, createdAt: "2026-01-05T10:00:00.000Z");
+
+        var u = new ChatStore(fx.Paths).Usage(A, false);
+
+        Assert.Equal(700, u.PeakInputTokens);
+        Assert.Equal(200, u.LastInputTokens);
+    }
+
+    [Fact]
+    public void Usage_works_with_a_table_without_an_id_column()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable(withId: false);
+        fx.AddSession(A);
+        fx.AddUsage(A, 0, "m", 700, 1, createdAt: "2026-01-05T10:00:00.000Z");
+        fx.AddUsage(A, 0, "m", 200, 1, createdAt: "2026-01-05T10:00:00.000Z");
+
+        var u = new ChatStore(fx.Paths).Usage(A, true);
+        var s = new ChatStore(fx.Paths).Stats();
+
+        Assert.True(u.Recorded);
+        Assert.Equal(700, u.PeakInputTokens);
+        Assert.Equal(200, u.LastInputTokens);
+        Assert.NotNull(s.Usage);
+        Assert.Equal(2, s.Usage!.Total.Requests);
+    }
+
+    [Fact]
+    public void Usage_prompt_size_is_null_without_main_requests()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        fx.AddUsage(A, 0, "m", 400, 1, agentId: "agent-1");
+
+        var u = new ChatStore(fx.Paths).Usage(A, true);
+
+        Assert.True(u.Recorded);
+        Assert.Null(u.PeakInputTokens);
+        Assert.Null(u.LastInputTokens);
+        Assert.Null(u.ByTurn![0].PeakInputTokens);
+        var json = JsonOut.Serialize(u);
+        Assert.DoesNotContain("peak_input_tokens", json);
+        Assert.DoesNotContain("last_input_tokens", json);
+    }
+
+    [Fact]
+    public void Usage_prompt_size_is_absent_when_nothing_is_recorded()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+
+        var u = new ChatStore(fx.Paths).Usage(A, false);
+
+        Assert.False(u.Recorded);
+        Assert.Null(u.PeakInputTokens);
+        Assert.Null(u.LastInputTokens);
+    }
+
+    [Fact]
+    public void Usage_by_turn_reports_the_peak_main_prompt_of_each_turn()
+    {
+        using var fx = new FixtureStore();
+        fx.AddUsageTable();
+        fx.AddSession(A);
+        fx.AddUsage(A, 0, "m", 4000, 1);
+        fx.AddUsage(A, 0, "m", 5000, 1);
+        fx.AddUsage(A, 0, "m", 8000, 1, agentId: "agent-1");
+        fx.AddUsage(A, 1, "m", 6000, 1, agentId: "agent-1");
+        fx.AddUsage(A, 2, "m", 2500, 1);
+
+        var u = new ChatStore(fx.Paths).Usage(A, byTurn: true);
+
+        Assert.Equal(new long?[] { 5000, null, 2500 }, u.ByTurn!.Select(t => t.PeakInputTokens));
+        Assert.Equal(5000, u.PeakInputTokens);
+    }
+
+    [Fact]
     public void Usage_total_stops_at_the_maximum_and_is_flagged_when_main_plus_subagents_overflow()
     {
         using var fx = new FixtureStore();
@@ -276,6 +378,9 @@ public class UsageTests
         Assert.Equal(4, root.GetProperty("total").GetProperty("requests").GetInt64());
         Assert.Equal(22_000_000, root.GetProperty("total").GetProperty("nano_aiu").GetInt64());
         Assert.Equal(2, root.GetProperty("by_turn").GetArrayLength());
+        Assert.Equal(2000, root.GetProperty("peak_input_tokens").GetInt64());
+        Assert.Equal(2000, root.GetProperty("last_input_tokens").GetInt64());
+        Assert.Equal(1500, root.GetProperty("by_turn")[0].GetProperty("peak_input_tokens").GetInt64());
     }
 
     [Fact]
@@ -289,6 +394,7 @@ public class UsageTests
         Assert.Contains("coverage: session-store.db only", output);
         Assert.Contains("nano_aiu", output);
         Assert.Contains("subagents:", output);
+        Assert.Contains("main prompt size: peak 2000, last 2000 input tokens", output);
     }
 
     [Fact]

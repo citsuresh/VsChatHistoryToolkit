@@ -73,9 +73,22 @@ public static class TextFormatter
                 Line(sb,$"  total:     {UsageLine(s.Total!)}");
                 Line(sb,$"  main:      {UsageLine(s.Main!)}");
                 Line(sb,$"  subagents: {UsageLine(s.Subagents!)}");
+                Line(sb,$"  main prompt size: peak {Num(s.PeakInputTokens)}, last {Num(s.LastInputTokens)} input tokens");
                 foreach (var m in s.ByModel) Line(sb,$"  model {m.Model}: {UsageLine(m.Totals)}");
-                foreach (var t in s.ByTurn ?? Array.Empty<UsageTurnItem>()) Line(sb,$"  turn {t.TurnIndex}: {UsageLine(t.Totals)}");
+                foreach (var t in s.ByTurn ?? Array.Empty<UsageTurnItem>()) Line(sb,$"  turn {t.TurnIndex}: {UsageLine(t.Totals)}, main peak in {Num(t.PeakInputTokens)}");
                 Line(sb,"  (nano_aiu is the stored cost unit; input tokens count the re-sent context on every request)");
+                break;
+            case FilesResult s:
+                Line(sb,$"files: {s.Count} for {s.SessionId}");
+                if (!s.Recorded) { Line(sb,$"  {s.Note}"); break; }
+                foreach (var f in s.Files)
+                    Line(sb,$"  turn {Num(f.TurnIndex)}  {f.ToolName ?? "-"}  {f.FirstSeenAt ?? "-"}  {f.FilePath}");
+                break;
+            case FilesByPathResult s:
+                Line(sb,$"files: {s.Count} chat(s) touched a path containing \"{s.Path}\"");
+                if (!s.Recorded) { Line(sb,$"  {s.Note}"); break; }
+                foreach (var x in s.Sessions)
+                    Line(sb,$"  {x.SessionId}  {x.LastSeenAt ?? "?"}  {x.FileCount} file(s)  last turn {Num(x.LastTurn)}  {x.Title ?? "(no title)"}");
                 break;
             case ChangeResult s:
                 Line(sb,$"{s.Command}{(s.DryRun ? " (dry run)" : "")}: session {s.SessionId}");
@@ -119,6 +132,8 @@ public static class TextFormatter
 
     private static string UsageLine(UsageTotals t) =>
         $"{t.Requests} requests, in {t.InputTokens} (cache read {t.CacheReadTokens}, cache write {t.CacheWriteTokens}), out {t.OutputTokens}, reasoning {t.ReasoningTokens}, nano_aiu {t.NanoAiu}, {t.DurationMs} ms";
+
+    private static string Num(long? n) => n?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-";
 
     private static string Short(string? s) =>
         s is null ? "(null)" : "\"" + TextUtilPublic.Cap(s, 60) + "\"";

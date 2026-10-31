@@ -94,8 +94,13 @@ public sealed record UsageTotals(
 
 public sealed record UsageModelItem(string Model, UsageTotals Totals);
 
-public sealed record UsageTurnItem(long TurnIndex, UsageTotals Totals);
+/// <summary>PeakInputTokens is the largest prompt of a main-chat request in that turn; null when the turn has only subagent requests.</summary>
+public sealed record UsageTurnItem(long TurnIndex, UsageTotals Totals, long? PeakInputTokens);
 
+/// <summary>
+/// PeakInputTokens and LastInputTokens describe the prompt size of main-chat requests only (no agent_id): the largest
+/// one, and the one of the latest request (by created_at, then rowid). Both are null when there are no main requests.
+/// </summary>
 public sealed record UsageResult(
     string SessionId,
     bool Recorded,
@@ -105,8 +110,28 @@ public sealed record UsageResult(
     UsageTotals? Subagents,
     string? FirstAt,
     string? LastAt,
+    long? PeakInputTokens,
+    long? LastInputTokens,
     IReadOnlyList<UsageModelItem> ByModel,
     IReadOnlyList<UsageTurnItem>? ByTurn) : ToolResult("usage");
+
+public sealed record FileItem(string FilePath, string? ToolName, long? TurnIndex, string? FirstSeenAt);
+
+/// <summary>Files edited or created in one chat, from session_files. Recorded is false when the store has no such table or the chat has no rows.</summary>
+public sealed record FilesResult(string SessionId, bool Recorded, string? Note, int Limit, IReadOnlyList<FileItem> Files)
+    : ToolResult("files")
+{
+    public int Count => Files.Count;
+}
+
+public sealed record FileSessionItem(string SessionId, string? Title, string TitleSource, int FileCount, long? LastTurn, string? LastSeenAt);
+
+/// <summary>Chats that touched a file whose path contains <see cref="Path"/>. Recorded is false only when the store has no usable session_files table.</summary>
+public sealed record FilesByPathResult(string Path, bool Recorded, string? Note, int Limit, IReadOnlyList<FileSessionItem> Sessions)
+    : ToolResult("files")
+{
+    public int Count => Sessions.Count;
+}
 
 public sealed record UsageMonthItem(string Month, UsageTotals Totals);
 

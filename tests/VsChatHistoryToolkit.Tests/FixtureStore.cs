@@ -58,7 +58,8 @@ public sealed class FixtureStore : IDisposable
             CREATE TABLE checkpoints(session_id TEXT, checkpoint_number INTEGER, title TEXT, overview TEXT, history TEXT,
                                      work_done TEXT, technical_details TEXT, important_files TEXT, next_steps TEXT,
                                      created_at TEXT);
-            CREATE TABLE session_files(session_id TEXT, path TEXT);
+            CREATE TABLE session_files(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, file_path TEXT NOT NULL,
+                                       tool_name TEXT, turn_index INTEGER, first_seen_at TEXT, UNIQUE(session_id, file_path));
             CREATE TABLE session_refs(session_id TEXT, ref TEXT);
             CREATE TABLE schema_version(version INTEGER NOT NULL);
             CREATE VIRTUAL TABLE search_index USING fts5(content, session_id UNINDEXED, source_type UNINDEXED, source_id UNINDEXED);
@@ -95,8 +96,8 @@ public sealed class FixtureStore : IDisposable
     }
 
     /// <summary>Creates the per-request usage table with the columns of the real store (synthetic rows only).</summary>
-    public void AddUsageTable(bool dropColumn = false) => Exec($"""
-        CREATE TABLE assistant_usage_events(id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, turn_index INTEGER NOT NULL,
+    public void AddUsageTable(bool dropColumn = false, bool withId = true) => Exec($"""
+        CREATE TABLE assistant_usage_events({(withId ? "id INTEGER PRIMARY KEY AUTOINCREMENT, " : "")}session_id TEXT NOT NULL, turn_index INTEGER NOT NULL,
             agent_id TEXT, parent_tool_call_id TEXT, model TEXT NOT NULL, input_tokens INTEGER NOT NULL, output_tokens INTEGER NOT NULL,
             cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL, reasoning_tokens INTEGER,
             {(dropColumn ? "" : "total_nano_aiu INTEGER,")} request_multiplier REAL, duration_ms INTEGER NOT NULL, created_at TEXT NOT NULL)
@@ -108,6 +109,10 @@ public sealed class FixtureStore : IDisposable
                 "VALUES($s,$t,$a,$m,$i,$o,$cr,$cw,$r,$n,$d,$c)",
             ("$s", sessionId), ("$t", turn), ("$a", agentId), ("$m", model), ("$i", input), ("$o", output), ("$cr", cacheRead),
             ("$cw", cacheWrite), ("$r", reasoning), ("$n", nanoAiu), ("$d", durationMs), ("$c", createdAt));
+
+    public void AddFile(string sessionId, string filePath, string? tool = "edit", int? turn = 0, string? firstSeen = "2026-01-05T10:06:00.000Z")
+        => Exec("INSERT INTO session_files(session_id,file_path,tool_name,turn_index,first_seen_at) VALUES($s,$p,$t,$i,$f)",
+            ("$s", sessionId), ("$p", filePath), ("$t", tool), ("$i", turn), ("$f", firstSeen));
 
     public void AddSearchRow(string content, string sourceType, string sourceId, string? sessionId = null) =>
         Exec("INSERT INTO search_index(content,session_id,source_type,source_id) VALUES($c,$s,$t,$i)",
