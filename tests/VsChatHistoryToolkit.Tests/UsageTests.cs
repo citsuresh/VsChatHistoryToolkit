@@ -520,7 +520,7 @@ public class UsageTests
         Assert.Contains("main:      15 requests", text);
         Assert.Contains(", credits 71.0,", text);
         Assert.Contains(", credits 2.0,", text);
-        Assert.Contains("subagent credits are unverified", text);
+        Assert.Contains("matched the chat footers on 7 of 7 turns", text);
 
         Assert.Contains("total: 17 requests", Run(fx, "stats", "--text").Out);
         Assert.Contains("credits 73.0", Run(fx, "stats", "--text").Out);

@@ -55,7 +55,7 @@ A renamed title appears only after Visual Studio restarts.
 
 ### Credits
 
-`usage`, `usage-top`, `activity` and `stats` report `credits`: the sum of `request_multiplier` over the stored requests (for example 11 requests of multiplier 1.0 give 11.0, 4 requests of multiplier 15.0 give 60.0). For main-chat requests this matched the credits shown in the chat footers in 6 of 6 turns checked. Subagent requests carry stored multipliers too, but the session-end data shows subagent requests cost 0.0, so subagent credits are unverified: quote the `main` figure of `usage`. When the store has no `request_multiplier` column, `credits` is omitted.
+`usage`, `usage-top`, `activity` and `stats` report `credits`: the sum of `request_multiplier` over the stored requests (for example 11 requests of multiplier 1.0 give 11.0, 4 requests of multiplier 15.0 give 60.0). This matched the credits shown in the chat footers in 7 of 7 turns checked, including one turn with subagent requests (two Opus requests at 15.0 plus two subagent requests at 1.0 gave 32.0), so subagent requests count and the `total` figure of `usage` is the one to quote. When the store has no `request_multiplier` column, `credits` is omitted.
 
 ## Projects
 

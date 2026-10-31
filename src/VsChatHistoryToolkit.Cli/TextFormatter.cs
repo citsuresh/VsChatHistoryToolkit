@@ -188,7 +188,7 @@ public static class TextFormatter
         c is { } v ? ", credits " + v.ToString("0.0#", System.Globalization.CultureInfo.InvariantCulture) : "";
 
     private const string CreditsNote =
-        "  (credits sum request_multiplier; the main-chat figure matched the chat footers, subagent credits are unverified)";
+        "  (credits sum request_multiplier over all requests, main and subagent; matched the chat footers on 7 of 7 turns)";
 
     private static string Num(long? n) => n?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-";
 

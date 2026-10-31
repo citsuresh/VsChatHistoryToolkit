@@ -81,8 +81,8 @@ public sealed record CountItem(string Key, int Sessions);
 /// Sums of the stored per-request usage rows. Values are exactly as stored: input_tokens is the whole prompt of each
 /// request (so summing it over a chat counts the re-sent context again every request), and nano_aiu is the stored cost
 /// unit, whose relation to the credits shown in the chat window is not verified. Credits is the sum of request_multiplier
-/// (NULL counts as 0, rounded to 2 decimals); it matched the chat footers for main-chat requests, while subagent credits
-/// are unverified. It is null when the store has no request_multiplier column.
+/// (NULL counts as 0, rounded to 2 decimals); it matched the chat footers on 7 of 7 turns checked, including one that used subagents (their requests count),
+/// so Total is the figure to quote. It is null when the store has no request_multiplier column.
 /// </summary>
 public sealed record UsageTotals(
     long Requests,

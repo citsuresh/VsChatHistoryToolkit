@@ -373,7 +373,7 @@ public class UsageTopTests
         var text = Run(fx, "usage-top", "--by", "credits", "--text").Out;
         Assert.Contains("usage-top: 3 chat(s) by credits", text);
         Assert.Contains("nano_aiu 9000, credits 0.5  chat a", text);
-        Assert.Contains("subagent credits are unverified", text);
+        Assert.Contains("matched the chat footers on 7 of 7 turns", text);
     }
 
     [Fact]
