@@ -841,6 +841,7 @@ public sealed class ChatStore
         if (!DateTimeOffset.TryParse(v, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var dt))
             throw new ToolkitException(ErrorKind.Usage, $"{option} must be a date (yyyy-MM-dd) or an ISO-8601 timestamp.");
         if (v.Length == 10 && endOfDay) dt = dt.AddDays(1);
-        return dt.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
+        // Same shape as the stored timestamps (milliseconds and a trailing Z), so the text comparison is exact to the millisecond.
+        return dt.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
     }
 }

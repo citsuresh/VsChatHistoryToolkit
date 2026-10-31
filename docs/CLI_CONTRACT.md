@@ -66,7 +66,7 @@ Words and numbers only; punctuation separates terms and every term is quoted for
 `hits[]`: `session_id` (read from the `search_index.session_id` column; null only if that column is empty), `source_type`, `source_id`, `snippet`. Also `query`, `terms`, `limit`, `count`.
 
 ### `sessions [--repo] [--cwd] [--branch] [--from] [--to] [--limit N]`
-`--repo/--cwd/--branch`: "contains", case-insensitive for ASCII letters (SQLite `LIKE`; other letters match only in the same case). `--from/--to`: `yyyy-MM-dd` or ISO-8601 (UTC); a date-only `--to` includes that whole day. They filter on the session end (last turn, falling back to `created_at` when there are no turns). Newest first.
+`--repo/--cwd/--branch`: "contains", case-insensitive for ASCII letters (SQLite `LIKE`; other letters match only in the same case). `--from/--to`: `yyyy-MM-dd` or ISO-8601 (UTC); a date-only `--to` includes that whole day. Fractional seconds in a bound are kept (compared to the millisecond). They filter on the session end (last turn, falling back to `created_at` when there are no turns). Newest first.
 
 `sessions[]`: `id`, `title`, `title_source` (`name` = workspace.yaml `name:`, `summary`, or `none`), `repository`, `cwd`, `branch`, `start` (`created_at`), `end` (`MAX(turns.timestamp)`, UTC ISO string, omitted without turns), `turn_count`.
 

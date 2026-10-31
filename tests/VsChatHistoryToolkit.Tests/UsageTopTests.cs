@@ -103,8 +103,8 @@ public class UsageTopTests
         Assert.Equal(new[] { C, B }, r.Sessions.Select(s => s.SessionId));
         Assert.Equal(2, r.Sessions[0].Requests);   // the 2026-01-31 request of C is outside the range
         Assert.Equal("2026-01-20T11:00:00.000Z", r.Sessions[0].LastAt);
-        Assert.Equal("2026-01-10T00:00:00", r.From);
-        Assert.Equal("2026-01-21T00:00:00", r.To);
+        Assert.Equal("2026-01-10T00:00:00.000Z", r.From);
+        Assert.Equal("2026-01-21T00:00:00.000Z", r.To);
 
         Assert.Equal(new[] { C }, store.UsageTop("2026-01-31", "2026-01-31", null, null).Sessions.Select(s => s.SessionId));
         Assert.Empty(store.UsageTop("2026-02-01", null, null, null).Sessions);
@@ -250,7 +250,7 @@ public class UsageTopTests
         Assert.Equal(Caps.Coverage, root.GetProperty("coverage").GetString());
         Assert.True(root.GetProperty("truncated").GetBoolean());
         Assert.Equal("tokens", root.GetProperty("by").GetString());
-        Assert.Equal("2026-01-01T00:00:00", root.GetProperty("from").GetString());
+        Assert.Equal("2026-01-01T00:00:00.000Z", root.GetProperty("from").GetString());
         Assert.False(root.TryGetProperty("to", out _));
         Assert.Equal(2, root.GetProperty("count").GetInt32());
         var first = root.GetProperty("sessions")[0];

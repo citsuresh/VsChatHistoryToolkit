@@ -397,6 +397,22 @@ public class UsageTests
         Assert.Contains("main prompt size: peak 2000, last 2000 input tokens", output);
     }
 
+    [Theory]
+    [InlineData("2026-01-05T10:05:00.400Z", null, true)]    // --from just before the turn: included
+    [InlineData("2026-01-05T10:05:00.900Z", null, false)]   // --from after the turn by 400 ms: excluded (used to be truncated to :00 and included)
+    [InlineData(null, "2026-01-05T10:05:00.900Z", true)]    // --to after the turn: included
+    [InlineData(null, "2026-01-05T10:05:00.500Z", false)]   // --to is exclusive: a turn at exactly that instant is excluded
+    public void Date_bounds_keep_fractional_seconds(string? from, string? to, bool expected)
+    {
+        using var fx = new FixtureStore();
+        fx.AddSession(A);
+        fx.AddTurn(A, 0, "u", "a", "2026-01-05T10:05:00.500Z");
+
+        var r = new ChatStore(fx.Paths).Sessions(new ChatStore.SessionQuery(null, null, null, from, to, null));
+
+        Assert.Equal(expected, r.Sessions.Count == 1);
+    }
+
     [Fact]
     public void Cli_usage_needs_exactly_one_id()
     {
