@@ -100,6 +100,31 @@ public static class TextFormatter
                 Line(sb,"  largest events.jsonl:");
                 foreach (var e in s.LargestEventsFiles) Line(sb,$"    {e.Bytes,12} bytes  {e.SessionId}");
                 break;
+            case EventsResult s:
+                Line(sb,$"events: {s.SessionId} ({(s.Present ? "present" : "missing")})");
+                if (!s.Present) Line(sb,$"  {s.Note}");
+                Line(sb,$"  scan: complete {s.Scan.Complete}, {s.Scan.BytesScanned} bytes, {s.Scan.LinesScanned} lines");
+                AppendEventCounts(sb, "event types", s.EventCounts.Select(x => new EventNameCount(x.Type, x.Count)));
+                AppendEventCounts(sb, "tools", s.Tools);
+                AppendEventCounts(sb, "permission kinds", s.PermissionKinds);
+                AppendEventCounts(sb, "skills", s.Skills);
+                Line(sb,$"  aborts: {s.Aborts}; subagents started: {s.SubagentsStarted}");
+                Line(sb,$"  compactions: {s.CompactionCount}");
+                foreach (var c in s.Compactions)
+                    Line(sb,$"    checkpoint {Num(c.CheckpointNumber)}  {c.Trigger ?? "-"}  success {c.Success?.ToString().ToLowerInvariant() ?? "-"}  tokens {Num(c.PreCompactionTokens)} -> {Num(c.PostCompactionTokens)} (removed {Num(c.TokensRemoved)})  messages removed {Num(c.MessagesRemoved)}  limit {Num(c.TokenLimit)}");
+                foreach (var shutdown in s.Shutdowns)
+                {
+                    Line(sb,$"  shutdown: {shutdown.ShutdownType ?? "-"}  premium requests {Num(shutdown.TotalPremiumRequests)}  nano_aiu {Num(shutdown.TotalNanoAiu)}  changes +{Num(shutdown.LinesAdded)}/-{Num(shutdown.LinesRemoved)} across {Num(shutdown.FilesModified)} files  API {Num(shutdown.TotalApiDurationMs)} ms");
+                    Line(sb,$"    tokens: current {Num(shutdown.CurrentTokens)}, system {Num(shutdown.SystemTokens)}, conversation {Num(shutdown.ConversationTokens)}, tool definitions {Num(shutdown.ToolDefinitionsTokens)}");
+                    foreach (var model in shutdown.Models ?? Array.Empty<EventModelMetric>())
+                        Line(sb,$"    model {model.Model ?? "-"}: {Num(model.Requests?.Count)} requests, cost {model.Requests?.Cost?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-"}");
+                }
+                break;
+            case ActivityResult s:
+                Line(sb,$"activity: {s.Count} day(s){(s.From is null ? "" : $" from {s.From}")}{(s.To is null ? "" : $" before {s.To}")}");
+                foreach (var d in s.Days)
+                    Line(sb,$"  {d.Day}: {d.Turns} turns, {d.Chats} chats{(d.Requests is null ? "" : $", {d.Requests} requests, nano_aiu {Num(d.NanoAiu)}")}");
+                break;
             case FilesResult s:
                 Line(sb,$"files: {s.Count} for {s.SessionId}");
                 if (!s.Recorded) { Line(sb,$"  {s.Note}"); break; }
@@ -164,6 +189,12 @@ public static class TextFormatter
     {
         Line(sb,$"  {label}:");
         foreach (var i in items) Line(sb,$"    {i.Sessions,5}  {i.Key}");
+    }
+
+    private static void AppendEventCounts(StringBuilder sb, string label, IEnumerable<EventNameCount> items)
+    {
+        Line(sb,$"  {label}:");
+        foreach (var item in items) Line(sb,$"    {item.Count,5}  {item.Name}");
     }
 }
 

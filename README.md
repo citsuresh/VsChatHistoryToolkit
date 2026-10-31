@@ -8,8 +8,8 @@ Read-only search over Visual Studio Copilot Chat history stored on your machine,
 
 `%LOCALAPPDATA%\Microsoft\VisualStudio\CopilotCli\`
 
-- `session-store.db` (SQLite, WAL, schema version 8): sessions, turns, checkpoints, the per-request `assistant_usage_events` table (token counts and cost, used by `usage`, `usage-top` and `stats`), the `session_files` table (files edited or created in each chat, used by `files`), and the `search_index` FTS5 table.
-- `session-state\<session-id>\workspace.yaml` (chat title) and `events.jsonl` (solution name; `doctor` reads only its size).
+- `session-store.db` (SQLite, WAL, schema version 8): sessions, turns, checkpoints, the per-request `assistant_usage_events` table (token counts and cost, used by `usage`, `usage-top`, `activity` and `stats`), the `session_files` table (files edited or created in each chat, used by `files`), and the `search_index` FTS5 table.
+- `session-state\<session-id>\workspace.yaml` (chat title) and `events.jsonl` (solution name; `events` reads bounded event metadata, and `doctor` reads only its size).
 
 Reads open the database with `mode=ro` plus `PRAGMA query_only=ON`, so they work while Visual Studio is running and still see rows that are only in the WAL. The database is never copied and never opened `immutable`. If the schema version (the `schema_version` table) is not 8, every command stops with an error naming the version found.
 
@@ -41,6 +41,8 @@ chathistory turns <id> [--index I | --range A-B] [--max-chars N]
 chathistory checkpoints <id> [--full]
 chathistory usage <id> [--by-turn]
 chathistory usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu] [--limit N]
+chathistory events <id>
+chathistory activity [--from DATE] [--to DATE] [--limit N]
 chathistory files <id> [--limit N]
 chathistory files --path <text> [--limit N]
 chathistory stats

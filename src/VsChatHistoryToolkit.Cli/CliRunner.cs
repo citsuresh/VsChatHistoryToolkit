@@ -19,6 +19,8 @@ public static class CliRunner
           checkpoints <id> [--full]
           usage <id> [--by-turn]
           usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu] [--limit N]
+          events <id>
+          activity [--from DATE] [--to DATE] [--limit N]
           files <id> [--limit N]
           files --path <text> [--limit N]
           stats
@@ -112,6 +114,13 @@ public static class CliRunner
             case "doctor":
                 a.Require(0, "doctor");
                 return store.Doctor();
+
+            case "events":
+                return store.Events(a.Require(1, "events <id>")[0]);
+
+            case "activity":
+                a.Require(0, "activity [--from DATE] [--to DATE] [--limit N]");
+                return store.Activity(a.Option("from"), a.Option("to"), a.IntOption("limit"));
 
             case "files":
             {

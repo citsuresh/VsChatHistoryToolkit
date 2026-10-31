@@ -156,6 +156,34 @@ public sealed record UsageTopResult(string By, string? From, string? To, bool Re
 
 public sealed record EventsFileItem(string SessionId, long Bytes);
 
+public sealed record EventScan(bool Complete, long BytesScanned, int LinesScanned);
+public sealed record EventCountItem(string Type, long Count);
+public sealed record EventNameCount(string Name, long Count);
+public sealed record EventCompaction(
+    long? CheckpointNumber, string? Trigger, bool? Success, long? PreCompactionTokens, long? PostCompactionTokens,
+    long? TokensRemoved, long? MessagesRemoved, long? TokenLimit);
+public sealed record EventModelRequests(long? Count, decimal? Cost);
+public sealed record EventModelMetric(string? Model, EventModelRequests? Requests);
+public sealed record EventShutdown(
+    string? ShutdownType, long? TotalPremiumRequests, long? TotalNanoAiu, long? LinesAdded, long? LinesRemoved,
+    int? FilesModified, long? CurrentTokens, long? SystemTokens, long? ConversationTokens, long? ToolDefinitionsTokens,
+    long? TotalApiDurationMs, IReadOnlyList<EventModelMetric>? Models);
+
+/// <summary>A bounded, read-only summary of one session's events.jsonl. Event payload text is never returned.</summary>
+public sealed record EventsResult(
+    string SessionId, bool Present, string? Note, EventScan Scan, IReadOnlyList<EventCountItem> EventCounts,
+    IReadOnlyList<EventNameCount> Tools, IReadOnlyList<EventNameCount> PermissionKinds, IReadOnlyList<EventNameCount> Skills,
+    long Aborts, long SubagentsStarted, long CompactionCount, IReadOnlyList<EventCompaction> Compactions,
+    IReadOnlyList<EventShutdown> Shutdowns) : ToolResult("events");
+
+public sealed record ActivityDayItem(string Day, long Turns, long Chats, long? Requests, long? NanoAiu);
+
+/// <summary>Daily turn and optional usage counts, ordered newest day first.</summary>
+public sealed record ActivityResult(string? From, string? To, int Limit, IReadOnlyList<ActivityDayItem> Days) : ToolResult("activity")
+{
+    public int Count => Days.Count;
+}
+
 /// <summary>
 /// Read-only health report. The id lists are samples (ordered, capped like stats); the counts are complete.
 /// SessionStateListed is false when session-state exists but could not be listed: the folder counts are then null

@@ -36,6 +36,8 @@ public class CliTests
             new[] { "files", "--path", "repo" },
             new[] { "usage-top" },
             new[] { "doctor" },
+            new[] { "events", A },
+            new[] { "activity" },
             new[] { "stats" },
         })
         {
@@ -220,5 +222,7 @@ public class CliTests
         var (exit, output, _) = Run(fx, "--help");
         Assert.Equal(0, exit);
         Assert.Contains("chathistory", output);
+        Assert.Contains("events <id>", output);
+        Assert.Contains("activity [--from DATE]", output);
     }
 }

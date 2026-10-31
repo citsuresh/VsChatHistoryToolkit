@@ -30,6 +30,13 @@ public static class Caps
 
     public const int DoctorLargestFiles = 10;
 
+    public const int EventsMaxBytes = 128 * 1024 * 1024;   // the largest real log seen was 64 MB; session-end events sit at the end of a file
+    public const int EventsMaxLines = 500_000;
+    public const int EventsMaxLineBytes = 1_000_000;
+    public const int EventsTop = 25;
+    public const int EventsCompactions = 25;
+    public const int EventsShutdowns = 10;
+
     public const int RenameTitleMaxLength = 120;
     public const int ActiveWindowMinutes = 10;
 

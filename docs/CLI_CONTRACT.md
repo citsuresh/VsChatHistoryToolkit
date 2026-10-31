@@ -55,6 +55,9 @@ JSON mode: printed to stdout. `--text` mode: printed to stderr as `error (<code>
 | `usage-top` chats (`--limit` default / maximum) | 20 / 100 |
 | `doctor` id lists (rows without a folder, folders without a row) / largest `events.jsonl` files | 25 / 10 |
 | `doctor` id or folder name | 160 characters |
+| `events` bytes / lines / single line | 128 MiB / 500 000 / 1 000 000 bytes |
+| `events` event types, tool names, permission kinds, skills, compactions, shutdowns, models per shutdown | 25 / 25 / 25 / 25 / 25 / 10 / 25 |
+| `activity` days (`--limit` default / maximum) | 20 / 100 |
 
 Every character cap cuts the text to that many characters and appends one ellipsis character when it cuts, so a capped string can be one character longer than the cap. Caller values above a maximum are clamped and `truncated` is set. Whole chats are never printed.
 
@@ -104,6 +107,12 @@ Files edited or created in chats, read from the `session_files` table (read-only
 
 ### `doctor`
 A read-only health report. It opens the database read-only, lists the folders directly under `session-state` and reads the size of each `events.jsonl`; it never opens chat files for reading, and never writes, moves or deletes anything. Result: `session_rows`, `session_state_folder_present`, `session_state_listed`, `session_folders` (folders directly under `session-state`), `rows_without_folder` and `folders_without_row` (full counts; ids are compared case-insensitively) with `rows_without_folder_ids[]` and `folders_without_row_names[]` (ordinal order, at most 25 each, `truncated` set when more), `sessions_without_turns`, `sessions_without_usage` (omitted when the usage table is absent or lacks a column this tool reads), and `largest_events_files[]` (`{session_id, bytes}`: the folder name and file size only, largest first, ties by name, at most 10, `truncated` set when more files exist). A missing `session-state` folder is a known state: `session_state_folder_present` is `false`, `session_state_listed` stays `true`, there are 0 folders and every session row counts as without a folder. When `session-state` exists but cannot be listed, `session_state_listed` is `false`, `session_folders`, `rows_without_folder` and `folders_without_row` are omitted (unknown, never a guess from a partial listing), the two id lists and `largest_events_files[]` are empty, and `truncated` is set. An `events.jsonl` whose size cannot be read is left out of `largest_events_files[]` and sets `truncated`.
+
+### `events <id>`
+`scan` contains `complete`, `bytes_scanned` and `lines_scanned`; an overlong line is counted but not parsed, and any scan cap makes `complete` false and `truncated` true. `event_counts` counts a line by its top-level `type` field without validating the rest of the line, so malformed lines with a readable type are included. `aborts`, `subagents_started`, `compaction_count`, `compactions[]`, `shutdowns[]`, `tools`, `permission_kinds` and `skills` count or include only lines that parse as valid JSON objects. `event_counts`, `tools`, `permission_kinds` and `skills` are ordered by count descending then name, at most 25 each. Event type, tool, permission, skill, trigger, shutdown and model names are capped at 160 characters, setting `truncated` when cut. Only the event type is inspected for other lines; selected event types are parsed for the listed metadata. Result fields also include the first 25 `compactions[]` and first 10 `shutdowns[]`; each shutdown's `models[]` has at most 25 items. Missing fields are omitted. Tool arguments, messages and file paths are never returned.
+
+### `activity [--from DATE] [--to DATE] [--limit N]`
+Database-only daily activity, grouped by UTC date from `turns.timestamp`, newest day first. Date bounds use the `sessions` parsing rules (a date-only `--to` includes that whole day) and apply to turn timestamps and usage request `created_at`. Each `days[]` item has `day`, `turns` and `chats` (distinct sessions with turns that day); when a usable `assistant_usage_events` table exists, it also has `requests` and `nano_aiu` for that day. Days present only in usage are included with zero turns/chats; days with no usage requests have zero usage counts. At most `--limit` days (default 20, maximum 100); `truncated` is set when more days exist or the limit is clamped. A usage sum overflow fails with `store_unavailable` (exit 3).
 
 ### `rename <id> "<title>" [--force] [--dry-run]`
 The only write. Exactly one session, matched by exact id.

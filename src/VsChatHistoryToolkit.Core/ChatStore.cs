@@ -327,6 +327,82 @@ public sealed class ChatStore
         return new UsageTopResult(by, from, to, true, null, take, list) { Truncated = truncated };
     }
 
+    /// <summary>Returns a bounded summary of selected event metadata for one session.</summary>
+    public EventsResult Events(string id)
+    {
+        StorePaths.ValidateSessionId(id);
+        using var conn = Open();
+        EnsureSessionExists(conn, id);
+        return EventsSummaryScanner.Scan(id, _paths.EventsPath(id));
+    }
+
+    /// <summary>Daily turn and optional usage counts, with UTC date bounds matching sessions.</summary>
+    public ActivityResult Activity(string? from, string? to, int? limit)
+    {
+        var take = Caps.ClampLimit(limit, out var clamped);
+        var lo = NormalizeBound(from, "--from", endOfDay: false);
+        var hi = NormalizeBound(to, "--to", endOfDay: true);
+
+        try { return ActivityCore(lo, hi, take, clamped); }
+        catch (SqliteException ex) when (IsOverflow(ex))
+        {
+            throw new ToolkitException(ErrorKind.StoreUnavailable,
+                "A daily usage figure is too large to add up (SQLite integer overflow); the stored values look wrong.");
+        }
+    }
+
+    private ActivityResult ActivityCore(string? from, string? to, int take, bool clamped)
+    {
+        using var conn = Open();
+        var hasUsage = ActivityUsageTableReady(conn);
+        var usageCte = hasUsage
+            ? """
+              , usage_days AS (
+                  SELECT strftime('%Y-%m-%d', created_at) AS day, COUNT(*) AS requests,
+                         COALESCE(SUM(COALESCE(total_nano_aiu, 0)), 0) AS nano_aiu
+                  FROM assistant_usage_events
+                  WHERE ($from IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', created_at) >= $from)
+                      AND ($to IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', created_at) < $to)
+                      AND strftime('%Y-%m-%d', created_at) IS NOT NULL
+                  GROUP BY day
+              )
+              """
+            : ", usage_days AS (SELECT NULL AS day, NULL AS requests, NULL AS nano_aiu WHERE 0)";
+        var usageSelect = hasUsage ? "COALESCE(u.requests, 0), COALESCE(u.nano_aiu, 0)" : "NULL, NULL";
+
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"""
+            WITH turn_days AS (
+                SELECT strftime('%Y-%m-%d', timestamp) AS day, COUNT(*) AS turns, COUNT(DISTINCT session_id) AS chats
+                FROM turns
+                WHERE ($from IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', timestamp) >= $from)
+                  AND ($to IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', timestamp) < $to)
+                  AND strftime('%Y-%m-%d', timestamp) IS NOT NULL
+                GROUP BY day
+            ){usageCte},
+            days AS (SELECT day FROM turn_days UNION SELECT day FROM usage_days)
+            SELECT d.day, COALESCE(t.turns, 0), COALESCE(t.chats, 0), {usageSelect}
+            FROM days d LEFT JOIN turn_days t ON t.day = d.day LEFT JOIN usage_days u ON u.day = d.day
+            ORDER BY d.day DESC LIMIT $n
+            """;
+        cmd.Parameters.AddWithValue("$from", (object?)from ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$to", (object?)to ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$n", take + 1);
+
+        var truncated = clamped;
+        var days = new List<ActivityDayItem>();
+        using (var r = cmd.ExecuteReader())
+        {
+            while (r.Read())
+            {
+                if (days.Count == take) { truncated = true; break; }
+                days.Add(new ActivityDayItem(Str(r, 0) ?? "", r.GetInt64(1), r.GetInt64(2),
+                    r.IsDBNull(3) ? null : r.GetInt64(3), r.IsDBNull(4) ? null : r.GetInt64(4)));
+            }
+        }
+        return new ActivityResult(from, to, take, days) { Truncated = truncated };
+    }
+
     /// <summary>
     /// Read-only health report comparing session rows with session-state folders. It only lists folders and reads file
     /// sizes; it never opens, changes or deletes anything on disk, and the database is opened read-only.
@@ -623,11 +699,16 @@ public sealed class ChatStore
         "cache_write_tokens", "reasoning_tokens", "total_nano_aiu", "duration_ms", "created_at",
     };
 
+    private static readonly string[] ActivityUsageColumns = { "session_id", "created_at", "total_nano_aiu" };
+
     private static UsageResult NoUsage(string id, string note) =>
         new(id, false, note, null, null, null, null, null, null, null, Array.Empty<UsageModelItem>(), null);
 
-    /// <summary>True when assistant_usage_events exists with every column this tool reads.</summary>
+    /// <summary>True when assistant_usage_events exists with every column usage and stats read.</summary>
     private static bool UsageTableReady(SqliteConnection conn) => HasColumns(conn, "assistant_usage_events", UsageColumns);
+
+    /// <summary>True when assistant_usage_events has the columns needed for daily activity.</summary>
+    private static bool ActivityUsageTableReady(SqliteConnection conn) => HasColumns(conn, "assistant_usage_events", ActivityUsageColumns);
 
     /// <summary>True when <paramref name="table"/> exists with every listed column. The table name is a constant, never user input.</summary>
     private static bool HasColumns(SqliteConnection conn, string table, string[] columns)
