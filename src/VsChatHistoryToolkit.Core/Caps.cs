@@ -28,6 +28,8 @@ public static class Caps
 
     public const int FilePathChars = 400;
 
+    public const int DoctorLargestFiles = 10;
+
     public const int RenameTitleMaxLength = 120;
     public const int ActiveWindowMinutes = 10;
 

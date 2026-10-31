@@ -52,6 +52,9 @@ JSON mode: printed to stdout. `--text` mode: printed to stderr as `error (<code>
 | `usage --by-turn` turns | 100 |
 | `files` file path (also the echoed `--path` text) | 400 characters |
 | `files` tool name | 160 characters |
+| `usage-top` chats (`--limit` default / maximum) | 20 / 100 |
+| `doctor` id lists (rows without a folder, folders without a row) / largest `events.jsonl` files | 25 / 10 |
+| `doctor` id or folder name | 160 characters |
 
 Every character cap cuts the text to that many characters and appends one ellipsis character when it cuts, so a capped string can be one character longer than the cap. Caller values above a maximum are clamped and `truncated` is set. Whole chats are never printed.
 
@@ -63,7 +66,7 @@ Words and numbers only; punctuation separates terms and every term is quoted for
 `hits[]`: `session_id` (read from the `search_index.session_id` column; null only if that column is empty), `source_type`, `source_id`, `snippet`. Also `query`, `terms`, `limit`, `count`.
 
 ### `sessions [--repo] [--cwd] [--branch] [--from] [--to] [--limit N]`
-`--repo/--cwd/--branch`: "contains", case-insensitive for ASCII letters (SQLite `LIKE`; other letters match only in the same case).
+`--repo/--cwd/--branch`: "contains", case-insensitive for ASCII letters (SQLite `LIKE`; other letters match only in the same case). `--from/--to`: `yyyy-MM-dd` or ISO-8601 (UTC); a date-only `--to` includes that whole day. They filter on the session end (last turn, falling back to `created_at` when there are no turns). Newest first.
 
 `sessions[]`: `id`, `title`, `title_source` (`name` = workspace.yaml `name:`, `summary`, or `none`), `repository`, `cwd`, `branch`, `start` (`created_at`), `end` (`MAX(turns.timestamp)`, UTC ISO string, omitted without turns), `turn_count`.
 
@@ -77,22 +80,30 @@ Words and numbers only; punctuation separates terms and every term is quoted for
 Default: `number`, `title`, `overview`, `created_at`. With `--full` also `history`, `work_done`, `technical_details`, `important_files`, `next_steps`.
 
 ### `usage <id> [--by-turn]`
-and the `input_tokens` of the latest main request (by `created_at`, then `rowid`)
+Token and cost figures of one session, summed from the per-request rows of the `assistant_usage_events` table (read-only, like every read). `recorded` is `true` when the session has rows; `total`, `main` (requests without an `agent_id`) and `subagents` (requests with one) are usage totals; `first_at` / `last_at` are the earliest and latest `created_at`; `peak_input_tokens` and `last_input_tokens` are the prompt size of main-chat requests only (no `agent_id`): the largest `input_tokens`, and the `input_tokens` of the latest main request (by `created_at`, then `rowid`); both are omitted (null) when the session has no main requests; `by_model[]` (`{model, totals}`, busiest first, top 25); with `--by-turn`, `by_turn[]` (`{turn_index, totals, peak_input_tokens}`, ordered, at most 100, `truncated` set when more; `peak_input_tokens` is the largest main-request prompt of that turn and is omitted when the turn has only subagent requests).
 
 A usage totals object has `requests`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens`, `reasoning_tokens`, `nano_aiu`, `duration_ms`. Missing numbers count as 0. If adding the main and subagent figures would overflow a 64-bit integer, that figure stops at the maximum and `truncated` is set. If SQLite itself overflows while summing the stored rows, `usage` fails with `store_unavailable` (exit 3) and `stats` leaves its `usage` section out and sets `truncated`. Values are exactly as stored:
 - `input_tokens` is the whole prompt of each request, so summing it over a chat counts the re-sent context again on every request; it is a measure of tokens processed, not of the chat's length. In the real store `cache_read_tokens` plus `cache_write_tokens` never exceeded `input_tokens` in any row, which suggests (not proven) that input includes the cached tokens.
 - `nano_aiu` is the stored cost unit (`total_nano_aiu`). Its relation to the credits shown in the chat window has not been verified, so it is reported as stored and never converted.
 - A store without the table (or without a column this tool reads) and a session without rows are normal answers: `recorded` is `false` and `note` says why. An unknown session id is `not_found` (exit 2).
 
+### `usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu] [--limit N]`
+Chats ranked by usage, from the `assistant_usage_events` table (read-only). `--from/--to` filter each request on its `created_at` with the same parsing as `sessions` (`yyyy-MM-dd` or ISO-8601, UTC; a date-only `--to` includes that whole day), so a chat's figures cover only its requests inside the range. `--by` (case-insensitive): `aiu` (default, sum of `total_nano_aiu`), `tokens` (sum of `input_tokens` plus sum of `output_tokens`) or `requests` (request count); main and subagent requests both count. Highest first, ties broken by session id; at most `--limit` chats (default 20, maximum 100; `truncated` set when more or when clamped). Any other `--by` value, a bad date or a positional argument is a `usage` error (exit 1).
+
+Result: `by`, `from` / `to` (the normalized UTC bounds that were applied, `to` exclusive; omitted when not given), `recorded`, `note`, `limit`, `count`, `sessions[]`: `session_id`, `title`, `title_source` (as in `sessions`: `name`, `summary`, or `none` when neither exists or the stored id is not a valid session id), `requests`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `reasoning_tokens`, `nano_aiu` (missing values count as 0), `last_at` (latest `created_at` in the range). The same notes on `input_tokens` and `nano_aiu` as for `usage` apply. A store without the usage table (or without a column this tool reads) is a normal answer: `recorded` is `false` and `note` says why. If SQLite overflows while summing, the command fails with `store_unavailable` (exit 3).
+
 ### `files <id> [--limit N]` and `files --path <text> [--limit N]`
 Files edited or created in chats, read from the `session_files` table (read-only). Exactly one of `<id>` or `--path` is required; neither, both, or an empty `--path` is a `usage` error (exit 1). Both forms print `"command": "files"`.
 
 - `files <id>`: `session_id`, `recorded`, `note`, `limit`, `count`, `files[]` (`file_path`, `tool_name`, `turn_index`, `first_seen_at`), ordered by `turn_index` then row `id`, at most `--limit` rows (`truncated` set when more). An unknown session id is `not_found` (exit 2).
-contains the text ("contains", case-insensitive for ASCII letters; `%`, `_` and `\` are matched literally, as in `sessions`).
+- `files --path <text>`: chats that touched a file whose `file_path` contains the text ("contains", case-insensitive for ASCII letters; `%`, `_` and `\` are matched literally, as in `sessions`). One row per chat: `sessions[]` (`session_id`, `title`, `title_source` as in `sessions`, `file_count` = distinct matching paths, `last_turn` = highest `turn_index` among the matching rows, `last_seen_at` = latest `first_seen_at` among them), newest `last_seen_at` first, at most `--limit` chats (`truncated` set when more). Also `path` (the text searched for, trimmed, cut at 400 characters with `truncated` set), `recorded`, `limit`, `count`. No match is an empty `sessions[]` with `recorded` `true`.
 - A store without the `session_files` table (or without a column this tool reads: `id`, `session_id`, `file_path`, `tool_name`, `turn_index`, `first_seen_at`), and for `files <id>` a chat without rows, are normal answers: `recorded` is `false` and `note` says why.
 
 ### `stats`
 `total_sessions`, `total_turns`, `by_repository[]`, `by_cwd[]`, `by_month[]` (each `{key, sessions}`; month is the session start `yyyy-MM`; empty values are `unknown`). When the usage table exists, also `usage`: `sessions_with_usage`, `total` (usage totals over all requests), `by_model[]` (top 25) and `by_month[]` (`{month, totals}` from each request's `created_at`, newest first, top 25). It is omitted when the table is absent or lacks a column this tool reads.
+
+### `doctor`
+A read-only health report. It opens the database read-only, lists the folders directly under `session-state` and reads the size of each `events.jsonl`; it never opens chat files for reading, and never writes, moves or deletes anything. Result: `session_rows`, `session_state_folder_present`, `session_state_listed`, `session_folders` (folders directly under `session-state`), `rows_without_folder` and `folders_without_row` (full counts; ids are compared case-insensitively) with `rows_without_folder_ids[]` and `folders_without_row_names[]` (ordinal order, at most 25 each, `truncated` set when more), `sessions_without_turns`, `sessions_without_usage` (omitted when the usage table is absent or lacks a column this tool reads), and `largest_events_files[]` (`{session_id, bytes}`: the folder name and file size only, largest first, ties by name, at most 10, `truncated` set when more files exist). A missing `session-state` folder is a known state: `session_state_folder_present` is `false`, `session_state_listed` stays `true`, there are 0 folders and every session row counts as without a folder. When `session-state` exists but cannot be listed, `session_state_listed` is `false`, `session_folders`, `rows_without_folder` and `folders_without_row` are omitted (unknown, never a guess from a partial listing), the two id lists and `largest_events_files[]` are empty, and `truncated` is set. An `events.jsonl` whose size cannot be read is left out of `largest_events_files[]` and sets `truncated`.
 
 ### `rename <id> "<title>" [--force] [--dry-run]`
 The only write. Exactly one session, matched by exact id.

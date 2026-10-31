@@ -8,7 +8,7 @@ public sealed class ParsedArgs
 {
     private static readonly HashSet<string> ValueOptions = new(StringComparer.Ordinal)
     {
-        "limit", "repo", "cwd", "branch", "from", "to", "index", "range", "max-chars", "root", "log-dir", "path",
+        "limit", "repo", "cwd", "branch", "from", "to", "index", "range", "max-chars", "root", "log-dir", "path", "by",
     };
 
     private static readonly HashSet<string> Flags = new(StringComparer.Ordinal)

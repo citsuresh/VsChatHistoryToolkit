@@ -10,6 +10,12 @@ public sealed class ChatStore
 
     public ChatStore(StorePaths paths) => _paths = paths;
 
+    /// <summary>Test seam for doctor: lists the folders directly under a folder.</summary>
+    internal Func<string, IEnumerable<string>> ListDirectories { get; init; } = Directory.EnumerateDirectories;
+
+    /// <summary>Test seam for doctor: the size of a file, or null when it does not exist.</summary>
+    internal Func<string, long?> FileLength { get; init; } = path => new FileInfo(path) is { Exists: true } f ? f.Length : null;
+
     public sealed record SessionQuery(string? Repo, string? Cwd, string? Branch, string? From, string? To, int? Limit);
 
     public SearchResult Search(string terms, int? limit)
@@ -249,6 +255,157 @@ public sealed class ChatStore
         }
 
         return new StatsResult(sessions, turns, byRepo, byCwd, byMonth, usage) { Truncated = truncated };
+    }
+
+    /// <summary>
+    /// Chats ranked by usage from assistant_usage_events, filtered on each request's created_at. A store without a usable
+    /// usage table is a normal answer (Recorded = false); a stored figure too large to add up is store_unavailable.
+    /// </summary>
+    public UsageTopResult UsageTop(string? from, string? to, string? by, int? limit)
+    {
+        var key = (by ?? "aiu").Trim().ToLowerInvariant();
+        var metric = key switch
+        {
+            "aiu" => "SUM(COALESCE(total_nano_aiu, 0))",
+            "tokens" => "SUM(input_tokens) + SUM(output_tokens)",
+            "requests" => "COUNT(*)",
+            _ => throw new ToolkitException(ErrorKind.Usage, "--by must be one of: requests, tokens, aiu."),
+        };
+        var take = Caps.ClampLimit(limit, out var clamped);
+        var lo = NormalizeBound(from, "--from", endOfDay: false);
+        var hi = NormalizeBound(to, "--to", endOfDay: true);
+
+        try { return UsageTopCore(key, metric, lo, hi, take, clamped); }
+        catch (SqliteException ex) when (IsOverflow(ex))
+        {
+            throw new ToolkitException(ErrorKind.StoreUnavailable,
+                "A usage figure is too large to add up (SQLite integer overflow); the stored values look wrong.");
+        }
+    }
+
+    private UsageTopResult UsageTopCore(string by, string metric, string? from, string? to, int take, bool clamped)
+    {
+        using var conn = Open();
+        if (!UsageTableReady(conn))
+            return new UsageTopResult(by, from, to, false,
+                "This store has no usage table (or it has an unexpected shape), so no token figures are available.", take, Array.Empty<UsageTopItem>());
+
+        // metric is one of three constant expressions chosen above, never user text.
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"""
+            WITH u AS (
+                SELECT session_id, COUNT(*) AS n, COALESCE(SUM(input_tokens), 0) AS i, COALESCE(SUM(output_tokens), 0) AS o,
+                       COALESCE(SUM(cache_read_tokens), 0) AS cr, COALESCE(SUM(reasoning_tokens), 0) AS r,
+                       COALESCE(SUM(total_nano_aiu), 0) AS aiu, MAX(created_at) AS last_at, {metric} AS score
+                FROM assistant_usage_events
+                WHERE ($from IS NULL OR created_at >= $from) AND ($to IS NULL OR created_at < $to)
+                GROUP BY session_id
+            )
+            SELECT u.session_id, s.summary, u.n, u.i, u.o, u.cr, u.r, u.aiu, u.last_at
+            FROM u LEFT JOIN sessions s ON s.id = u.session_id
+            ORDER BY u.score DESC, u.session_id
+            LIMIT $n
+            """;
+        cmd.Parameters.AddWithValue("$from", (object?)from ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$to", (object?)to ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$n", take + 1);
+
+        var truncated = clamped;
+        var list = new List<UsageTopItem>();
+        using (var r = cmd.ExecuteReader())
+        {
+            while (r.Read())
+            {
+                if (list.Count == take) { truncated = true; break; }
+                var sid = Str(r, 0) ?? "";
+                var (title, source, cut) = IsSessionId(sid) ? ResolveTitle(sid, Str(r, 1)) : (null, "none", false);
+                truncated |= cut;
+                list.Add(new UsageTopItem(sid, title, source, r.GetInt64(2), r.GetInt64(3), r.GetInt64(4), r.GetInt64(5), r.GetInt64(6), r.GetInt64(7), Str(r, 8)));
+            }
+        }
+
+        return new UsageTopResult(by, from, to, true, null, take, list) { Truncated = truncated };
+    }
+
+    /// <summary>
+    /// Read-only health report comparing session rows with session-state folders. It only lists folders and reads file
+    /// sizes; it never opens, changes or deletes anything on disk, and the database is opened read-only.
+    /// </summary>
+    public DoctorResult Doctor()
+    {
+        using var conn = Open();
+        var truncated = false;
+
+        var rows = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = "SELECT id FROM sessions";
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) if (Str(r, 0) is { } id) rows.Add(id);
+        }
+        var sessionRows = ScalarInt(conn, "SELECT COUNT(*) FROM sessions", null);
+        var withoutTurns = ScalarInt(conn,
+            "SELECT COUNT(*) FROM sessions s WHERE NOT EXISTS (SELECT 1 FROM turns t WHERE t.session_id = s.id)", null);
+        int? withoutUsage = UsageTableReady(conn)
+            ? ScalarInt(conn, "SELECT COUNT(*) FROM sessions s WHERE NOT EXISTS (SELECT 1 FROM assistant_usage_events u WHERE u.session_id = s.id)", null)
+            : null;
+
+        var dir = _paths.SessionStateDir;
+        var present = Directory.Exists(dir);
+        var folders = new List<string>();
+        // A missing session-state folder is a known state (no folders); only a folder that exists but cannot be listed
+        // leaves the folder figures unknown. A partial listing is discarded rather than reported as complete.
+        var listed = true;
+        if (present)
+        {
+            try { folders.AddRange(ListDirectories(dir).Select(Path.GetFileName).OfType<string>()); }
+            catch (IOException) { listed = false; }
+            catch (UnauthorizedAccessException) { listed = false; }
+            if (!listed) { folders.Clear(); truncated = true; }
+        }
+        var folderSet = new HashSet<string>(folders, StringComparer.OrdinalIgnoreCase);
+
+        var rowsWithoutFolder = listed ? rows.Where(id => !folderSet.Contains(id)).Order(StringComparer.Ordinal).ToList() : new List<string>();
+        var foldersWithoutRow = folders.Where(f => !rows.Contains(f)).Order(StringComparer.Ordinal).ToList();
+
+        var sizes = new List<EventsFileItem>();
+        foreach (var f in folders)
+        {
+            try
+            {
+                if (FileLength(Path.Combine(dir, f, "events.jsonl")) is { } bytes) sizes.Add(new EventsFileItem(f, bytes));
+            }
+            catch (IOException) { truncated = true; }
+            catch (UnauthorizedAccessException) { truncated = true; }
+        }
+        if (sizes.Count > Caps.DoctorLargestFiles) truncated = true;
+        var largest = new List<EventsFileItem>();
+        foreach (var e in sizes.OrderByDescending(s => s.Bytes).ThenBy(s => s.SessionId, StringComparer.Ordinal).Take(Caps.DoctorLargestFiles))
+            largest.Add(e with { SessionId = CapName(e.SessionId, ref truncated) });
+
+        var rowsSample = Sample(rowsWithoutFolder, Caps.StatsTop, ref truncated);
+        var foldersSample = Sample(foldersWithoutRow, Caps.StatsTop, ref truncated);
+
+        return new DoctorResult(sessionRows, present, listed,
+            listed ? folders.Count : null, listed ? rowsWithoutFolder.Count : null, rowsSample,
+            listed ? foldersWithoutRow.Count : null, foldersSample, withoutTurns, withoutUsage, largest)
+        { Truncated = truncated };
+    }
+
+    private static List<string> Sample(List<string> all, int max, ref bool truncated)
+    {
+        if (all.Count > max) truncated = true;
+        var list = new List<string>();
+        foreach (var s in all.Take(max)) list.Add(CapName(s, ref truncated));
+        return list;
+    }
+
+    /// <summary>Folder names and stored ids are not guaranteed to have the session id shape, so they are capped like titles.</summary>
+    private static string CapName(string s, ref bool truncated)
+    {
+        var c = TextUtil.Cap(s, Caps.TitleChars, out var cut);
+        truncated |= cut;
+        return c;
     }
 
     /// <summary>

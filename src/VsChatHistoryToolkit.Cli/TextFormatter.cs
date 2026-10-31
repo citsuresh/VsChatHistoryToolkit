@@ -78,6 +78,28 @@ public static class TextFormatter
                 foreach (var t in s.ByTurn ?? Array.Empty<UsageTurnItem>()) Line(sb,$"  turn {t.TurnIndex}: {UsageLine(t.Totals)}, main peak in {Num(t.PeakInputTokens)}");
                 Line(sb,"  (nano_aiu is the stored cost unit; input tokens count the re-sent context on every request)");
                 break;
+            case UsageTopResult s:
+                Line(sb,$"usage-top: {s.Count} chat(s) by {s.By}{(s.From is null ? "" : $" from {s.From}")}{(s.To is null ? "" : $" before {s.To}")}");
+                if (!s.Recorded) { Line(sb,$"  {s.Note}"); break; }
+                foreach (var x in s.Sessions)
+                    Line(sb,$"  {x.SessionId}  {x.LastAt ?? "?"}  {x.Requests} requests, in {x.InputTokens} (cache read {x.CacheReadTokens}), out {x.OutputTokens}, reasoning {x.ReasoningTokens}, nano_aiu {x.NanoAiu}  {x.Title ?? "(no title)"}");
+                Line(sb,"  (nano_aiu is the stored cost unit; input tokens count the re-sent context on every request)");
+                break;
+            case DoctorResult s:
+                Line(sb,"doctor (read-only)");
+                Line(sb,$"  session rows: {s.SessionRows}");
+                if (!s.SessionStateListed)
+                    Line(sb,"  session-state could not be listed: folder counts are unknown");
+                Line(sb,$"  session folders: {Num(s.SessionFolders)}{(s.SessionStateFolderPresent ? "" : "  (session-state folder missing)")}");
+                Line(sb,$"  rows without a folder: {Num(s.RowsWithoutFolder)}");
+                foreach (var id in s.RowsWithoutFolderIds) Line(sb,$"    {id}");
+                Line(sb,$"  folders without a row: {Num(s.FoldersWithoutRow)}");
+                foreach (var id in s.FoldersWithoutRowNames) Line(sb,$"    {id}");
+                Line(sb,$"  sessions without turns: {s.SessionsWithoutTurns}");
+                if (s.SessionsWithoutUsage is { } nu) Line(sb,$"  sessions without usage rows: {nu}");
+                Line(sb,"  largest events.jsonl:");
+                foreach (var e in s.LargestEventsFiles) Line(sb,$"    {e.Bytes,12} bytes  {e.SessionId}");
+                break;
             case FilesResult s:
                 Line(sb,$"files: {s.Count} for {s.SessionId}");
                 if (!s.Recorded) { Line(sb,$"  {s.Note}"); break; }

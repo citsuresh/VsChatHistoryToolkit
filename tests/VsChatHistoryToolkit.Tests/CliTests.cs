@@ -34,6 +34,8 @@ public class CliTests
             new[] { "checkpoints", A },
             new[] { "files", A },
             new[] { "files", "--path", "repo" },
+            new[] { "usage-top" },
+            new[] { "doctor" },
             new[] { "stats" },
         })
         {

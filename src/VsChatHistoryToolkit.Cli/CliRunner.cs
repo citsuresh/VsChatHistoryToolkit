@@ -18,9 +18,11 @@ public static class CliRunner
           turns <id> [--index I | --range A-B] [--max-chars N]
           checkpoints <id> [--full]
           usage <id> [--by-turn]
+          usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu] [--limit N]
           files <id> [--limit N]
           files --path <text> [--limit N]
           stats
+          doctor
           rename <id> "<title>" [--force] [--dry-run]
           undo-rename <id> [--force] [--dry-run]
 
@@ -102,6 +104,14 @@ public static class CliRunner
 
             case "usage":
                 return store.Usage(a.Require(1, "usage <id> [--by-turn]")[0], a.Flag("by-turn"));
+
+            case "usage-top":
+                a.Require(0, "usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu] [--limit N]");
+                return store.UsageTop(a.Option("from"), a.Option("to"), a.Option("by"), a.IntOption("limit"));
+
+            case "doctor":
+                a.Require(0, "doctor");
+                return store.Doctor();
 
             case "files":
             {

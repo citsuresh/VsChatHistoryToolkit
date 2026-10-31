@@ -135,6 +135,45 @@ public sealed record FilesByPathResult(string Path, bool Recorded, string? Note,
 
 public sealed record UsageMonthItem(string Month, UsageTotals Totals);
 
+public sealed record UsageTopItem(
+    string SessionId,
+    string? Title,
+    string TitleSource,
+    long Requests,
+    long InputTokens,
+    long OutputTokens,
+    long CacheReadTokens,
+    long ReasoningTokens,
+    long NanoAiu,
+    string? LastAt);
+
+/// <summary>Chats ranked by usage. From/To are the normalized UTC bounds that were applied (To is exclusive). Recorded is false when the store has no usable usage table.</summary>
+public sealed record UsageTopResult(string By, string? From, string? To, bool Recorded, string? Note, int Limit, IReadOnlyList<UsageTopItem> Sessions)
+    : ToolResult("usage-top")
+{
+    public int Count => Sessions.Count;
+}
+
+public sealed record EventsFileItem(string SessionId, long Bytes);
+
+/// <summary>
+/// Read-only health report. The id lists are samples (ordered, capped like stats); the counts are complete.
+/// SessionStateListed is false when session-state exists but could not be listed: the folder counts are then null
+/// (unknown) and the folder-based lists are empty. SessionsWithoutUsage is null when the store has no usable usage table.
+/// </summary>
+public sealed record DoctorResult(
+    int SessionRows,
+    bool SessionStateFolderPresent,
+    bool SessionStateListed,
+    int? SessionFolders,
+    int? RowsWithoutFolder,
+    IReadOnlyList<string> RowsWithoutFolderIds,
+    int? FoldersWithoutRow,
+    IReadOnlyList<string> FoldersWithoutRowNames,
+    int SessionsWithoutTurns,
+    int? SessionsWithoutUsage,
+    IReadOnlyList<EventsFileItem> LargestEventsFiles) : ToolResult("doctor");
+
 /// <summary>Usage across all sessions; absent from stats when the store has no usage table.</summary>
 public sealed record UsageOverview(
     int SessionsWithUsage,
