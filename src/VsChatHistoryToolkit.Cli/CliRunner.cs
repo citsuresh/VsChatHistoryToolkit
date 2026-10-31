@@ -21,6 +21,7 @@ public static class CliRunner
           usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu|credits] [--limit N]
           events <id>
           activity [--from DATE] [--to DATE] [--limit N]
+          rollup [--from DATE] [--to DATE] [--limit N]
           files <id> [--limit N]
           files --path <text> [--limit N]
           stats
@@ -81,7 +82,7 @@ public static class CliRunner
     {
         var root = a.Option("root") ?? env.Root ?? Environment.GetEnvironmentVariable("VSCHATHISTORY_ROOT");
         var paths = root is null ? StorePaths.Default() : new StorePaths(root);
-        var store = new ChatStore(paths);
+        var store = new ChatStore(paths, env.Clock);
 
         switch (a.Command)
         {
@@ -121,6 +122,10 @@ public static class CliRunner
             case "activity":
                 a.Require(0, "activity [--from DATE] [--to DATE] [--limit N]");
                 return store.Activity(a.Option("from"), a.Option("to"), a.IntOption("limit"));
+
+            case "rollup":
+                a.Require(0, "rollup [--from DATE] [--to DATE] [--limit N]");
+                return store.Rollup(a.Option("from"), a.Option("to"), a.IntOption("limit"));
 
             case "files":
             {

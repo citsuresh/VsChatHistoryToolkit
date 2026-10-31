@@ -9,7 +9,7 @@ Read-only search over Visual Studio Copilot Chat history stored on your machine,
 `%LOCALAPPDATA%\Microsoft\VisualStudio\CopilotCli\`
 
 - `session-store.db` (SQLite, WAL, schema version 8): sessions, turns, checkpoints, the per-request `assistant_usage_events` table (token counts and cost, used by `usage`, `usage-top`, `activity` and `stats`), the `session_files` table (files edited or created in each chat, used by `files`), and the `search_index` FTS5 table.
-- `session-state\<session-id>\workspace.yaml` (chat title) and `events.jsonl` (solution name; `events` reads bounded event metadata, and `doctor` reads only its size).
+- `session-state\<session-id>\workspace.yaml` (chat title) and `events.jsonl` (solution name; `events` and `rollup` read bounded event metadata, and `doctor` reads only its size).
 
 Reads open the database with `mode=ro` plus `PRAGMA query_only=ON`, so they work while Visual Studio is running and still see rows that are only in the WAL. The database is never copied and never opened `immutable`. If the schema version (the `schema_version` table) is not 8, every command stops with an error naming the version found.
 
@@ -43,6 +43,7 @@ chathistory usage <id> [--by-turn]
 chathistory usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu|credits] [--limit N]
 chathistory events <id>
 chathistory activity [--from DATE] [--to DATE] [--limit N]
+chathistory rollup [--from DATE] [--to DATE] [--limit N]
 chathistory files <id> [--limit N]
 chathistory files --path <text> [--limit N]
 chathistory stats
@@ -52,6 +53,10 @@ chathistory undo-rename <id> [--force] [--dry-run]
 ```
 
 A renamed title appears only after Visual Studio restarts.
+
+### Rollup
+
+`rollup` combines the `events` summaries of the most recent chats (chosen like `sessions`, newest first, `--limit` default 20, maximum 100): top event types, tools, skills and permission kinds, aborts, subagents, compaction counts, triggers and token medians, session-end totals, and the chats that compacted most. The scans run one after another within 60 seconds and 512 MiB in total; the limits are checked when each scan starts and a scan already running always finishes, so a total can pass a limit slightly. When a budget runs out the remaining chats are reported in `chats_skipped` and `truncated` is set. Triggers and token medians cover the first 25 compactions of each chat, while the compaction count is complete. An unreadable log is skipped, never fatal. Only names and counts are returned, never message text, tool arguments or paths.
 
 ### Credits
 

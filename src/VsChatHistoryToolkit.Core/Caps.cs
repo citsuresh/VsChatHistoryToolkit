@@ -37,6 +37,11 @@ public static class Caps
     public const int EventsCompactions = 25;
     public const int EventsShutdowns = 10;
 
+    public const int RollupMaxSeconds = 60;
+    public const long RollupMaxBytes = 512L * 1024 * 1024;
+    public const int RollupTop = 25;
+    public const int RollupTopChats = 5;
+
     public const int RenameTitleMaxLength = 120;
     public const int ActiveWindowMinutes = 10;
 

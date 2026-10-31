@@ -128,6 +128,20 @@ public static class TextFormatter
                 foreach (var d in s.Days)
                     Line(sb,$"  {d.Day}: {d.Turns} turns, {d.Chats} chats{(d.Requests is null ? "" : $", {d.Requests} requests, nano_aiu {Num(d.NanoAiu)}{Credits(d.Credits)}")}");
                 break;
+            case RollupResult s:
+                Line(sb,$"rollup: {s.ChatsConsidered} chat(s) considered{(s.From is null ? "" : $" from {s.From}")}{(s.To is null ? "" : $" before {s.To}")}");
+                Line(sb,$"  scanned {s.ChatsScanned}, skipped {s.ChatsSkipped}, without log {s.ChatsWithoutLog}, incomplete scan {s.ChatsWithIncompleteScan}, without shutdown {s.ChatsWithoutShutdown}; {s.BytesScanned} bytes");
+                AppendEventCounts(sb, "event types", s.EventCounts.Select(x => new EventNameCount(x.Type, x.Count)));
+                AppendEventCounts(sb, "tools", s.Tools);
+                AppendEventCounts(sb, "skills", s.Skills);
+                AppendEventCounts(sb, "permission kinds", s.PermissionKinds);
+                Line(sb,$"  aborts: {s.Aborts}; subagents started: {s.SubagentsStarted}");
+                Line(sb,$"  compactions: {s.Compactions.Count}; pre-compaction tokens median {Num(s.Compactions.MedianPreCompactionTokens)}, max {Num(s.Compactions.MaxPreCompactionTokens)}; tokens removed median {Num(s.Compactions.MedianTokensRemoved)}");
+                foreach (var t in s.Compactions.ByTrigger) Line(sb,$"    {t.Count,5}  {t.Name}");
+                Line(sb,$"  shutdown totals: premium requests {s.ShutdownTotals.PremiumRequests}, nano_aiu {s.ShutdownTotals.NanoAiu}, changes +{s.ShutdownTotals.LinesAdded}/-{s.ShutdownTotals.LinesRemoved}");
+                Line(sb,"  top chats by compactions:");
+                foreach (var c in s.TopChatsByCompactions) Line(sb,$"    {c.Count,5}  {c.SessionId}");
+                break;
             case FilesResult s:
                 Line(sb,$"files: {s.Count} for {s.SessionId}");
                 if (!s.Recorded) { Line(sb,$"  {s.Note}"); break; }

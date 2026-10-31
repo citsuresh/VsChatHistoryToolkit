@@ -7,8 +7,20 @@ namespace VsChatHistoryToolkit;
 public sealed class ChatStore
 {
     private readonly StorePaths _paths;
+    private readonly Func<DateTimeOffset>? _clock;
 
-    public ChatStore(StorePaths paths) => _paths = paths;
+    /// <param name="clock">Optional time source for the rollup time budget; null measures real elapsed time with a stopwatch.</param>
+    public ChatStore(StorePaths paths, Func<DateTimeOffset>? clock = null)
+    {
+        _paths = paths;
+        _clock = clock;
+    }
+
+    /// <summary>Test seam for rollup: the total byte budget across all scans.</summary>
+    internal long RollupMaxBytes { get; init; } = Caps.RollupMaxBytes;
+
+    /// <summary>Test seam for rollup: scans one events.jsonl (session id, path).</summary>
+    internal Func<string, string, EventsResult> ScanEvents { get; init; } = EventsSummaryScanner.Scan;
 
     /// <summary>Test seam for doctor: lists the folders directly under a folder.</summary>
     internal Func<string, IEnumerable<string>> ListDirectories { get; init; } = Directory.EnumerateDirectories;
@@ -344,6 +356,188 @@ public sealed class ChatStore
         using var conn = Open();
         EnsureSessionExists(conn, id);
         return EventsSummaryScanner.Scan(id, _paths.EventsPath(id));
+    }
+
+    /// <summary>
+    /// Combines the events summaries of the most recent chats (chosen like sessions: filtered on the session end,
+    /// newest first). Scans run one after another under a total time and byte budget; once a budget would be
+    /// exceeded no new scan starts and the remaining chats count as skipped. An unreadable log is skipped, never fatal.
+    /// </summary>
+    public RollupResult Rollup(string? from, string? to, int? limit)
+    {
+        var take = Caps.ClampLimit(limit, out var clamped);
+        var fromBound = NormalizeBound(from, "--from", endOfDay: false);
+        var toBound = NormalizeBound(to, "--to", endOfDay: true);
+        var elapsed = StartTimer();
+
+        var ids = new List<string>();
+        var truncated = clamped;
+        using (var conn = Open())
+        using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                WITH t AS (SELECT session_id, MAX(timestamp) AS last_ts FROM turns GROUP BY session_id)
+                SELECT s.id FROM sessions s LEFT JOIN t ON t.session_id = s.id
+                WHERE ($from IS NULL OR COALESCE(t.last_ts, s.created_at) >= $from)
+                  AND ($to IS NULL OR COALESCE(t.last_ts, s.created_at) < $to)
+                ORDER BY COALESCE(t.last_ts, s.created_at) DESC, s.id
+                LIMIT $limit
+                """;
+            cmd.Parameters.AddWithValue("$from", (object?)fromBound ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$to", (object?)toBound ?? DBNull.Value);
+            cmd.Parameters.AddWithValue("$limit", take + 1);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                if (ids.Count == take) { truncated = true; break; }
+                ids.Add(r.GetString(0));
+            }
+        }
+
+        var budget = TimeSpan.FromSeconds(Caps.RollupMaxSeconds);
+        long scanned = 0, skipped = 0, withoutLog = 0, incomplete = 0, withoutShutdown = 0, bytesUsed = 0;
+        var saturated = false;
+        var exhausted = false;
+        var results = new List<EventsResult>();
+        foreach (var id in ids)
+        {
+            if (exhausted) { skipped++; continue; }
+
+            long? length;
+            string path;
+            try
+            {
+                path = _paths.EventsPath(id);
+                // A folder in place of the log cannot be read: skipped, as events reports it, not "without log".
+                if (Directory.Exists(path))
+                {
+                    skipped++;
+                    truncated = true;
+                    continue;
+                }
+                length = FileLength(path);
+            }
+            catch (Exception ex) when (ex is ToolkitException or IOException or UnauthorizedAccessException)
+            {
+                skipped++;
+                truncated = true;
+                continue;
+            }
+            if (length is null) { withoutLog++; continue; }
+
+            var projected = Math.Min(length.Value, Caps.EventsMaxBytes);
+            if (elapsed() >= budget || projected > RollupMaxBytes - bytesUsed)
+            {
+                exhausted = true;
+                truncated = true;
+                skipped++;
+                continue;
+            }
+
+            EventsResult result;
+            try { result = ScanEvents(id, path); }
+            catch (ToolkitException)
+            {
+                skipped++;
+                truncated = true;
+                continue;
+            }
+            if (!result.Present) { withoutLog++; continue; }
+
+            bytesUsed += Math.Max(projected, result.Scan.BytesScanned);
+            scanned++;
+            results.Add(result);
+            truncated |= result.Truncated;
+            if (!result.Scan.Complete) incomplete++;
+            else if (result.Shutdowns.Count == 0) withoutShutdown++;
+        }
+
+        var eventCounts = MergeTop(results.SelectMany(x => x.EventCounts.Select(e => (e.Type, e.Count))), ref truncated, ref saturated)
+            .Select(x => new EventCountItem(x.Name, x.Count)).ToList();
+        var tools = MergeTop(results.SelectMany(x => x.Tools.Select(e => (e.Name, e.Count))), ref truncated, ref saturated);
+        var skills = MergeTop(results.SelectMany(x => x.Skills.Select(e => (e.Name, e.Count))), ref truncated, ref saturated);
+        var kinds = MergeTop(results.SelectMany(x => x.PermissionKinds.Select(e => (e.Name, e.Count))), ref truncated, ref saturated);
+
+        long aborts = 0, subagents = 0, compactionCount = 0;
+        long premium = 0, nanoAiu = 0, added = 0, removed = 0;
+        var pre = new List<long>();
+        var tokensRemoved = new List<long>();
+        var triggers = new List<(string, long)>();
+        foreach (var x in results)
+        {
+            aborts = SaturatingAdd(aborts, x.Aborts, ref saturated);
+            subagents = SaturatingAdd(subagents, x.SubagentsStarted, ref saturated);
+            compactionCount = SaturatingAdd(compactionCount, x.CompactionCount, ref saturated);
+            foreach (var c in x.Compactions)
+            {
+                triggers.Add((c.Trigger ?? "(none)", 1));
+                if (c.PreCompactionTokens is { } p) pre.Add(p);
+                if (c.TokensRemoved is { } t) tokensRemoved.Add(t);
+            }
+            foreach (var s in x.Shutdowns)
+            {
+                premium = SaturatingAdd(premium, s.TotalPremiumRequests ?? 0, ref saturated);
+                nanoAiu = SaturatingAdd(nanoAiu, s.TotalNanoAiu ?? 0, ref saturated);
+                added = SaturatingAdd(added, s.LinesAdded ?? 0, ref saturated);
+                removed = SaturatingAdd(removed, s.LinesRemoved ?? 0, ref saturated);
+            }
+        }
+        var byTrigger = MergeTop(triggers, ref truncated, ref saturated);
+
+        var topChats = results.Where(x => x.CompactionCount > 0)
+            .OrderByDescending(x => x.CompactionCount).ThenBy(x => x.SessionId, StringComparer.Ordinal)
+            .Take(Caps.RollupTopChats)
+            .Select(x => new RollupChatCount(x.SessionId, x.CompactionCount)).ToList();
+
+        var compactions = new RollupCompactions(compactionCount, byTrigger, Median(pre), pre.Count == 0 ? null : pre.Max(), Median(tokensRemoved));
+        return new RollupResult(fromBound, toBound, take, ids.Count, scanned, skipped, withoutLog, incomplete, withoutShutdown, bytesUsed,
+            eventCounts, tools, skills, kinds, aborts, subagents, compactions,
+            new RollupShutdownTotals(premium, nanoAiu, added, removed), topChats) { Truncated = truncated || saturated };
+    }
+
+    /// <summary>Returns a function giving the time since this call: from the injected clock, or a stopwatch.</summary>
+    private Func<TimeSpan> StartTimer()
+    {
+        if (_clock is { } clock)
+        {
+            var start = clock();
+            return () => clock() - start;
+        }
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        return () => sw.Elapsed;
+    }
+
+    /// <summary>Sums counts per name, then keeps the top RollupTop by count (descending) and name (ordinal).</summary>
+    private static List<EventNameCount> MergeTop(IEnumerable<(string Name, long Count)> items, ref bool truncated, ref bool saturated)
+    {
+        var sums = new Dictionary<string, long>(StringComparer.Ordinal);
+        foreach (var (name, count) in items)
+            sums[name] = SaturatingAdd(sums.GetValueOrDefault(name), count, ref saturated);
+        if (sums.Count > Caps.RollupTop) truncated = true;
+        return sums.OrderByDescending(x => x.Value).ThenBy(x => x.Key, StringComparer.Ordinal)
+            .Take(Caps.RollupTop).Select(x => new EventNameCount(x.Key, x.Value)).ToList();
+    }
+
+    private static long SaturatingAdd(long a, long b, ref bool saturated)
+    {
+        try { return checked(a + b); }
+        catch (OverflowException)
+        {
+            saturated = true;
+            return b > 0 ? long.MaxValue : long.MinValue;
+        }
+    }
+
+    /// <summary>The middle value; with an even count the mean of the two middle values, rounded down. Null without values.</summary>
+    private static long? Median(List<long> values)
+    {
+        if (values.Count == 0) return null;
+        values.Sort();
+        var mid = values.Count / 2;
+        if (values.Count % 2 == 1) return values[mid];
+        var lo = values[mid - 1];
+        var hi = values[mid];
+        return (long)Math.Floor(((decimal)lo + hi) / 2);
     }
 
     /// <summary>Daily turn and optional usage counts, with UTC date bounds matching sessions.</summary>

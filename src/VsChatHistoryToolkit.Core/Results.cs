@@ -180,6 +180,23 @@ public sealed record EventsResult(
     long Aborts, long SubagentsStarted, long CompactionCount, IReadOnlyList<EventCompaction> Compactions,
     IReadOnlyList<EventShutdown> Shutdowns) : ToolResult("events");
 
+public sealed record RollupCompactions(
+    long Count, IReadOnlyList<EventNameCount> ByTrigger, long? MedianPreCompactionTokens, long? MaxPreCompactionTokens,
+    long? MedianTokensRemoved);
+public sealed record RollupShutdownTotals(long PremiumRequests, long NanoAiu, long LinesAdded, long LinesRemoved);
+public sealed record RollupChatCount(string SessionId, long Count);
+
+/// <summary>
+/// EventsSummaryScanner results of the most recent chats, combined. ChatsConsidered = ChatsScanned + ChatsSkipped +
+/// ChatsWithoutLog. Names (event types, tools, skills, permission kinds, triggers) are the only text returned.
+/// </summary>
+public sealed record RollupResult(
+    string? From, string? To, int Limit, long ChatsConsidered, long ChatsScanned, long ChatsSkipped, long ChatsWithoutLog,
+    long ChatsWithIncompleteScan, long ChatsWithoutShutdown, long BytesScanned, IReadOnlyList<EventCountItem> EventCounts,
+    IReadOnlyList<EventNameCount> Tools, IReadOnlyList<EventNameCount> Skills, IReadOnlyList<EventNameCount> PermissionKinds,
+    long Aborts, long SubagentsStarted, RollupCompactions Compactions, RollupShutdownTotals ShutdownTotals,
+    IReadOnlyList<RollupChatCount> TopChatsByCompactions) : ToolResult("rollup");
+
 /// <summary>Requests and NanoAiu are null without a usable usage table; Credits is also null when that table has no request_multiplier column.</summary>
 public sealed record ActivityDayItem(string Day, long Turns, long Chats, long? Requests, long? NanoAiu, double? Credits);
 
