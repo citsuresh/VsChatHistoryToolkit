@@ -40,8 +40,11 @@ public sealed class SessionRenamer
 
     public string LogPath => Path.Combine(_logDir, "rename-log.jsonl");
 
-    /// <summary>Test seam: called with a stage name ("after-lock", "before-applied-log") at fixed points of a write.</summary>
+    /// <summary>Test seam: called with a stage name at fixed points of a write.</summary>
     internal Action<string>? StageHook { get; set; }
+    internal Action<SqliteConnection>? CommitHook { get; set; }
+    internal Action<string, string>? FileReplaceHook { get; set; }
+    internal Func<string, long>? YamlMtimeTicksHook { get; set; }
 
     public ChangeResult Rename(string id, string rawTitle, bool force, bool dryRun)
     {
@@ -173,7 +176,7 @@ public sealed class SessionRenamer
             yamlReplaced = true;
             if (!SameBytes(yamlPath, written))
                 throw new IOException("workspace.yaml was changed by another program while it was being written");
-            yamlTicks = File.GetLastWriteTimeUtc(yamlPath).Ticks;
+            yamlTicks = YamlMtimeTicksHook?.Invoke(yamlPath) ?? File.GetLastWriteTimeUtc(yamlPath).Ticks;
         }
         catch (Exception ex)
         {
@@ -190,6 +193,7 @@ public sealed class SessionRenamer
 
         try
         {
+            CommitHook?.Invoke(conn);
             StoreConnection.Exec(conn, "COMMIT");
         }
         catch (SqliteException ex)
@@ -302,7 +306,8 @@ public sealed class SessionRenamer
                         throw new ToolkitException(ErrorKind.Refused,
                             "workspace.yaml was changed by another program while the replace was being retried. Nothing was changed.");
 
-                    File.Replace(temp, path, null);
+                    if (FileReplaceHook is null) File.Replace(temp, path, null);
+                    else FileReplaceHook(temp, path);
                     break;
                 }
                 catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < ReplaceAttempts)
