@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$RepositoryPath = 'C:\MyFiles\Git\VsChatHistoryToolkit',
-    [string]$SharedPath = $PSScriptRoot
+    [string]$SharedPath = 'C:\Shared'
 )
 
 $ErrorActionPreference = 'Stop'
