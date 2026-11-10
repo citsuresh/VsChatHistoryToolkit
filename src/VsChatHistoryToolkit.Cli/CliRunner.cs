@@ -19,6 +19,7 @@ public static class CliRunner
           checkpoints <id> [--full]
           usage <id> [--by-turn]
           usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu|credits] [--limit N]
+          usage-breakdown [--from DATE] [--to DATE] [--repo TEXT] [--model TEXT] [--group-by day,repo,model] [--limit N]
           events <id>
           activity [--from DATE] [--to DATE] [--limit N]
           rollup [--from DATE] [--to DATE] [--limit N]
@@ -111,6 +112,11 @@ public static class CliRunner
             case "usage-top":
                 a.Require(0, "usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu|credits] [--limit N]");
                 return store.UsageTop(a.Option("from"), a.Option("to"), a.Option("by"), a.IntOption("limit"));
+
+            case "usage-breakdown":
+                a.Require(0, "usage-breakdown [--from DATE] [--to DATE] [--repo TEXT] [--model TEXT] [--group-by day,repo,model] [--limit N]");
+                return store.UsageBreakdown(a.Option("from"), a.Option("to"), a.Option("repo"), a.Option("model"),
+                    a.Option("group-by"), a.IntOption("limit"));
 
             case "doctor":
                 a.Require(0, "doctor");

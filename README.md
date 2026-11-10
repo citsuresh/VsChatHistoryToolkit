@@ -41,6 +41,7 @@ chathistory turns <id> [--index I | --range A-B] [--max-chars N]
 chathistory checkpoints <id> [--full]
 chathistory usage <id> [--by-turn]
 chathistory usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu|credits] [--limit N]
+chathistory usage-breakdown [--from DATE] [--to DATE] [--repo TEXT] [--model TEXT] [--group-by day,repo,model] [--limit N]
 chathistory events <id>
 chathistory activity [--from DATE] [--to DATE] [--limit N]
 chathistory rollup [--from DATE] [--to DATE] [--limit N]
@@ -60,7 +61,7 @@ A renamed title appears only after Visual Studio restarts.
 
 ### Credits
 
-`usage`, `usage-top`, `activity` and `stats` report `credits`: the sum of `request_multiplier` over the stored requests (for example 11 requests of multiplier 1.0 give 11.0, 4 requests of multiplier 15.0 give 60.0). This matched the credits shown in the chat footers in 7 of 7 turns checked, including one turn with subagent requests (two Opus requests at 15.0 plus two subagent requests at 1.0 gave 32.0), so subagent requests count and the `total` figure of `usage` is the one to quote. When the store has no `request_multiplier` column, `credits` is omitted.
+`usage`, `usage-top`, `usage-breakdown`, `activity` and `stats` report `credits`: the sum of `request_multiplier` over the stored requests
 
 ## Projects
 

@@ -318,7 +318,8 @@ public sealed class ChatStore
                        COALESCE(SUM(total_nano_aiu), 0) AS aiu, MAX(created_at) AS last_at, {metric} AS score,
                        {(credits ? CreditsSum : "NULL")} AS credits
                 FROM assistant_usage_events
-                WHERE ($from IS NULL OR created_at >= $from) AND ($to IS NULL OR created_at < $to)
+                WHERE ($from IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', created_at) >= $from)
+                  AND ($to IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', created_at) < $to)
                 GROUP BY session_id
             )
             SELECT u.session_id, s.summary, u.n, u.i, u.o, u.cr, u.r, u.aiu, u.last_at, u.credits
@@ -348,6 +349,110 @@ public sealed class ChatStore
 
         return new UsageTopResult(by, from, to, true, note, take, list) { Truncated = truncated };
     }
+
+    public UsageBreakdownResult UsageBreakdown(
+        string? from, string? to, string? repo, string? model, string? groupBy, int? limit)
+    {
+        var requested = (groupBy ?? "day,repo,model").Split(',').Select(x => x.Trim().ToLowerInvariant()).ToArray();
+        string[] keys = { "day", "repo", "model" };
+        if (requested.Any(x => !keys.Contains(x)) || requested.Distinct().Count() != requested.Length)
+            throw new ToolkitException(ErrorKind.Usage, "--group-by must be a non-empty combination of day, repo, model, without duplicates.");
+        var groups = keys.Where(requested.Contains).ToArray();
+        var take = limit ?? Caps.UsageBreakdownDefaultLimit;
+        if (take < 1) throw new ToolkitException(ErrorKind.Usage, "--limit must be at least 1.");
+        var clamped = take > Caps.UsageBreakdownMaxLimit;
+        take = Math.Min(take, Caps.UsageBreakdownMaxLimit);
+        var lo = NormalizeBound(from, "--from", endOfDay: false);
+        var hi = NormalizeBound(to, "--to", endOfDay: true);
+
+        try { return UsageBreakdownCore(lo, hi, repo, model, groups, take, clamped); }
+        catch (Exception ex) when (IsOverflow(ex))
+        {
+            throw new ToolkitException(ErrorKind.StoreUnavailable,
+                "A usage figure is too large to add up (SQLite integer or real overflow); the stored values look wrong.");
+        }
+    }
+
+    private UsageBreakdownResult UsageBreakdownCore(
+        string? from, string? to, string? repo, string? model, string[] groups, int take, bool clamped)
+    {
+        using var conn = Open();
+        if (!HasColumns(conn, "assistant_usage_events",
+            new[] { "session_id", "created_at", "model", "input_tokens", "output_tokens", "total_nano_aiu" }))
+            return new UsageBreakdownResult(from, to, groups, false,
+                "This store has no usage table (or it has an unexpected shape), so no token figures are available.",
+                take, null, Array.Empty<UsageBreakdownItem>());
+
+        var credits = CreditsColumnPresent(conn);
+        var modelFilter = string.IsNullOrWhiteSpace(model) ? null : model.Trim();
+        conn.CreateFunction<string?, string?, bool>("model_contains",
+            (value, filter) => filter is null || value?.Contains(filter, StringComparison.OrdinalIgnoreCase) == true);
+        // Group expressions are constants selected by the validated key list, never SQL from the caller.
+        var day = groups.Contains("day") ? "request_day" : "NULL";
+        var repository = groups.Contains("repo") ? "repository" : "NULL";
+        var requestModel = groups.Contains("model") ? "request_model" : "NULL";
+        var grouping = string.Join(", ", groups.Select(x => x switch
+        {
+            "day" => "request_day",
+            "repo" => "repository",
+            _ => "request_model",
+        }));
+        var aggregates = $"""
+            COUNT(*) AS requests, COALESCE(SUM(total_nano_aiu), 0) AS nano_aiu,
+            {(credits ? CreditsSum : "NULL")} AS credits,
+            COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens,
+            COUNT(DISTINCT session_id) AS chats
+            """;
+        using var cmd = conn.CreateCommand();
+        // One statement keeps total and rows on the same read snapshot, including while VS records more requests.
+        cmd.CommandText = $"""
+            WITH filtered AS (
+                SELECT u.session_id, strftime('%Y-%m-%d', u.created_at) AS request_day,
+                       COALESCE(NULLIF(s.repository, ''), 'unknown') AS repository,
+                       COALESCE(NULLIF(u.model, ''), 'unknown') AS request_model,
+                       u.input_tokens, u.output_tokens, u.total_nano_aiu,
+                       {(credits ? "u.request_multiplier" : "NULL")} AS request_multiplier
+                FROM assistant_usage_events u LEFT JOIN sessions s ON s.id = u.session_id
+                WHERE ($from IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', u.created_at) >= $from)
+                  AND ($to IS NULL OR strftime('%Y-%m-%dT%H:%M:%fZ', u.created_at) < $to)
+                  AND ($repo IS NULL OR s.repository LIKE $repo ESCAPE '\')
+                  AND model_contains(u.model, $model)
+            ), grouped AS (
+                SELECT {day} AS day, {repository} AS repo, {requestModel} AS model, {aggregates}
+                FROM filtered GROUP BY {grouping}
+            ), limited AS (
+                SELECT 1 AS row_kind, * FROM grouped
+                ORDER BY day DESC, nano_aiu DESC, repo, model LIMIT $n
+            )
+            SELECT 0 AS row_kind, NULL AS day, NULL AS repo, NULL AS model, {aggregates} FROM filtered
+            UNION ALL SELECT * FROM limited
+            ORDER BY row_kind, day DESC, nano_aiu DESC, repo, model
+            """;
+        cmd.Parameters.AddWithValue("$from", (object?)from ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$to", (object?)to ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$repo", Contains(repo));
+        cmd.Parameters.AddWithValue("$model", (object?)modelFilter ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$n", take + 1);
+
+        using var r = cmd.ExecuteReader();
+        r.Read();
+        var total = ReadBreakdownTotals(r, credits);
+        var rows = new List<UsageBreakdownItem>();
+        var truncated = clamped;
+        while (r.Read())
+        {
+            if (rows.Count == take) { truncated = true; break; }
+            var totals = ReadBreakdownTotals(r, credits);
+            rows.Add(new UsageBreakdownItem(Str(r, 1), Str(r, 2), Str(r, 3), totals.Requests, totals.NanoAiu,
+                totals.Credits, totals.InputTokens, totals.OutputTokens, totals.Chats));
+        }
+        var note = truncated ? $"Rows are limited to {take}; total covers all filtered requests." : null;
+        return new UsageBreakdownResult(from, to, groups, true, note, take, total, rows) { Truncated = truncated };
+    }
+
+    private static UsageBreakdownTotals ReadBreakdownTotals(SqliteDataReader r, bool credits) =>
+        new(r.GetInt64(4), r.GetInt64(5), credits ? ReadCredits(r, 6, r.GetInt64(4)) : null,
+            r.GetInt64(7), r.GetInt64(8), r.GetInt64(9));
 
     /// <summary>Returns a bounded summary of selected event metadata for one session.</summary>
     public EventsResult Events(string id)

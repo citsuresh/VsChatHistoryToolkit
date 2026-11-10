@@ -18,6 +18,52 @@ public class CliTests
 
     private static JsonElement Json(string text) => JsonDocument.Parse(text).RootElement;
 
+    [Theory]
+    [InlineData("model", "opus")]
+    [InlineData("group-by", "day")]
+    public void Breakdown_only_options_are_usage_errors_on_other_commands(string option, string value)
+    {
+        using var fx = new FixtureStore();
+        foreach (var command in new[]
+        {
+            "search", "sessions", "show", "turns", "checkpoints", "usage", "usage-top", "events",
+            "activity", "rollup", "files", "stats", "doctor", "rename", "undo-rename",
+        })
+        {
+            foreach (var args in new[]
+            {
+                new[] { command, "--" + option, value },
+                new[] { "--" + option, value, command },
+                new[] { command, "--" + option + "=" + value },
+            })
+            {
+                var (exit, output, _) = Run(fx, args);
+                Assert.Equal(ExitCodes.Usage, exit);
+                var error = Json(output).GetProperty("error");
+                Assert.Equal("usage", error.GetProperty("code").GetString());
+                Assert.Contains("only supported by usage-breakdown", error.GetProperty("message").GetString());
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("model", "opus")]
+    [InlineData("group-by", "day")]
+    public void Breakdown_options_still_parse_before_or_after_their_command(string option, string value)
+    {
+        foreach (var args in new[]
+        {
+            new[] { "usage-breakdown", "--" + option, value },
+            new[] { "--" + option, value, "usage-breakdown" },
+            new[] { "usage-breakdown", "--" + option + "=" + value },
+        })
+        {
+            var parsed = ParsedArgs.Parse(args);
+            Assert.Equal("usage-breakdown", parsed.Command);
+            Assert.Equal(value, parsed.Option(option));
+        }
+    }
+
     [Fact]
     public void Every_json_result_carries_coverage_and_truncated()
     {
@@ -35,6 +81,7 @@ public class CliTests
             new[] { "files", A },
             new[] { "files", "--path", "repo" },
             new[] { "usage-top" },
+            new[] { "usage-breakdown" },
             new[] { "doctor" },
             new[] { "events", A },
             new[] { "activity" },

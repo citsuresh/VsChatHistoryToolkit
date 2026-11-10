@@ -88,6 +88,20 @@ public static class TextFormatter
                 Line(sb,"  (nano_aiu is the stored cost unit; input tokens count the re-sent context on every request)");
                 if (s.Sessions.Any(x => x.Credits is not null)) Line(sb, CreditsNote);
                 break;
+            case UsageBreakdownResult s:
+                Line(sb,$"usage-breakdown: {s.Count} row(s) by {string.Join(",", s.GroupBy)}{(s.From is null ? "" : $" from {s.From}")}{(s.To is null ? "" : $" before {s.To}")}");
+                if (s.Note is not null) Line(sb,$"  {s.Note}");
+                if (s.Total is { } total)
+                    Line(sb,$"  total: {BreakdownLine(total.Requests, total.NanoAiu, total.Credits, total.InputTokens, total.OutputTokens, total.Chats)}");
+                foreach (var x in s.Rows)
+                {
+                    var keys = new List<string>();
+                    if (x.Day is not null) keys.Add($"day {x.Day}");
+                    if (x.Repo is not null) keys.Add($"repo {x.Repo}");
+                    if (x.Model is not null) keys.Add($"model {x.Model}");
+                    Line(sb,$"  {string.Join("  ", keys)}: {BreakdownLine(x.Requests, x.NanoAiu, x.Credits, x.InputTokens, x.OutputTokens, x.Chats)}");
+                }
+                break;
             case DoctorResult s:
                 Line(sb,"doctor (read-only)");
                 Line(sb,$"  session rows: {s.SessionRows}");
@@ -196,6 +210,9 @@ public static class TextFormatter
 
     private static string UsageLine(UsageTotals t) =>
         $"{t.Requests} requests, in {t.InputTokens} (cache read {t.CacheReadTokens}, cache write {t.CacheWriteTokens}), out {t.OutputTokens}, reasoning {t.ReasoningTokens}, nano_aiu {t.NanoAiu}{Credits(t.Credits)}, {t.DurationMs} ms";
+
+    private static string BreakdownLine(long requests, long nanoAiu, double? credits, long input, long output, long chats) =>
+        $"{requests} requests, nano_aiu {nanoAiu}{Credits(credits)}, in {input}, out {output}, {chats} chats";
 
     /// <summary>", credits N" with at least one decimal (11.0, 0.25), or nothing when the store has no request_multiplier column.</summary>
     private static string Credits(double? c) =>

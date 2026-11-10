@@ -25,6 +25,8 @@ public static class Caps
     public const int StatsTop = 25;
 
     public const int MaxUsageTurns = 100;
+    public const int UsageBreakdownDefaultLimit = 100;
+    public const int UsageBreakdownMaxLimit = 500;
 
     public const int FilePathChars = 400;
 

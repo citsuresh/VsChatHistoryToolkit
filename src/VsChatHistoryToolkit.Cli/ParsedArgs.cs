@@ -8,7 +8,7 @@ public sealed class ParsedArgs
 {
     private static readonly HashSet<string> ValueOptions = new(StringComparer.Ordinal)
     {
-        "limit", "repo", "cwd", "branch", "from", "to", "index", "range", "max-chars", "root", "log-dir", "path", "by",
+        "limit", "repo", "cwd", "branch", "from", "to", "index", "range", "max-chars", "root", "log-dir", "path", "by", "model", "group-by",
     };
 
     private static readonly HashSet<string> Flags = new(StringComparer.Ordinal)
@@ -53,6 +53,12 @@ public sealed class ParsedArgs
 
             if (p.Command is null) p.Command = a;
             else p.Positionals.Add(a);
+        }
+        if (p.Command != "usage-breakdown")
+        {
+            foreach (var name in new[] { "model", "group-by" })
+                if (p._options.ContainsKey(name))
+                    throw new ToolkitException(ErrorKind.Usage, $"Option '--{name}' is only supported by usage-breakdown.");
         }
         return p;
     }

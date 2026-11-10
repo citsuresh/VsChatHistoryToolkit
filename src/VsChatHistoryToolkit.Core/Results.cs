@@ -158,6 +158,20 @@ public sealed record UsageTopResult(string By, string? From, string? To, bool Re
     public int Count => Sessions.Count;
 }
 
+public sealed record UsageBreakdownTotals(
+    long Requests, long NanoAiu, double? Credits, long InputTokens, long OutputTokens, long Chats);
+
+public sealed record UsageBreakdownItem(
+    string? Day, string? Repo, string? Model,
+    long Requests, long NanoAiu, double? Credits, long InputTokens, long OutputTokens, long Chats);
+
+public sealed record UsageBreakdownResult(
+    string? From, string? To, IReadOnlyList<string> GroupBy, bool Recorded, string? Note, int Limit,
+    UsageBreakdownTotals? Total, IReadOnlyList<UsageBreakdownItem> Rows) : ToolResult("usage-breakdown")
+{
+    public int Count => Rows.Count;
+}
+
 public sealed record EventsFileItem(string SessionId, long Bytes);
 
 public sealed record EventScan(bool Complete, long BytesScanned, int LinesScanned);
