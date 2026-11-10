@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "1.0",
+  "generatedAt": "2026-11-10T10:21:56.2730148Z",
+  "solutionPath": "C:\\MyFiles\\Git\\VsChatHistoryToolkit\\VsChatHistoryToolkit.slnx",
+  "commitSha": "6e1aa5ddc23a2e85d524884f8503f269b935a641",
+  "projects": [
+    {
+      "name": "VsChatHistoryToolkit.Cli",
+      "path": "C:\\MyFiles\\Git\\VsChatHistoryToolkit\\src\\VsChatHistoryToolkit.Cli\\VsChatHistoryToolkit.Cli.csproj",
+      "references": [
+        "VsChatHistoryToolkit.Core"
+      ]
+    },
+    {
+      "name": "VsChatHistoryToolkit.Core",
+      "path": "C:\\MyFiles\\Git\\VsChatHistoryToolkit\\src\\VsChatHistoryToolkit.Core\\VsChatHistoryToolkit.Core.csproj",
+      "references": []
+    },
+    {
+      "name": "VsChatHistoryToolkit.Tests",
+      "path": "C:\\MyFiles\\Git\\VsChatHistoryToolkit\\tests\\VsChatHistoryToolkit.Tests\\VsChatHistoryToolkit.Tests.csproj",
+      "references": [
+        "VsChatHistoryToolkit.Cli",
+        "VsChatHistoryToolkit.Core"
+      ]
+    }
+  ]
+}
