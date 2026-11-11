@@ -797,6 +797,82 @@ public sealed class ChatStore
         return c;
     }
 
+    /// <summary>Newest usage-bearing turn indices, returned ascending, with whole-session totals from the same snapshot.</summary>
+    public UsageTurnsResult UsageTurns(string id, int? limit)
+    {
+        StorePaths.ValidateSessionId(id);
+        var take = Caps.ClampLimit(limit, out var clamped);
+        try { return UsageTurnsCore(id, take, clamped); }
+        catch (Exception ex) when (IsOverflow(ex))
+        {
+            throw new ToolkitException(ErrorKind.StoreUnavailable,
+                "A usage figure is too large to add up (SQLite integer or real overflow); the stored values look wrong.");
+        }
+    }
+
+    private UsageTurnsResult UsageTurnsCore(string id, int take, bool clamped)
+    {
+        using var conn = Open();
+        if (ScalarInt(conn, "SELECT COUNT(*) FROM sessions WHERE id = $id", id) == 0)
+            throw new ToolkitException(ErrorKind.NotFound, "No matching session row exists.");
+        var clampNote = clamped ? " Requested limit was clamped to 100." : "";
+        if (!HasColumns(conn, "assistant_usage_events", UsageColumns.Where(x => x != "model").ToArray()))
+            return new UsageTurnsResult(false,
+                "This store has no usage table (or it has an unexpected shape), so no token figures are available." + clampNote,
+                take, null, Array.Empty<UsageTurnSnapshot>()) { Truncated = clamped };
+
+        var credits = CreditsColumnPresent(conn);
+        var aggregates = UsageAggregates(credits);
+        conn.CreateFunction<string?, string?>("usage_timestamp_utc", UsageTimestampUtc, isDeterministic: true);
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"""
+            WITH filtered AS (
+                SELECT turn_index, agent_id, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+                       reasoning_tokens, total_nano_aiu, duration_ms,
+                       {(credits ? "request_multiplier" : "NULL")} AS request_multiplier,
+                       usage_timestamp_utc(created_at) AS usage_at
+                FROM assistant_usage_events WHERE session_id = $id
+            ), recent AS (
+                SELECT turn_index FROM filtered GROUP BY turn_index ORDER BY turn_index DESC LIMIT $n
+            )
+            SELECT 0 AS row_kind, NULL AS turn_index, {aggregates}, NULL AS peak_input_tokens,
+                   NULL AS first_at, NULL AS last_at, NULL AS timestamps_complete,
+                   COUNT(DISTINCT turn_index) AS turn_count
+            FROM filtered
+            UNION ALL
+            SELECT 1, turn_index, {aggregates}, MAX(CASE WHEN agent_id IS NULL THEN input_tokens END),
+                   MIN(usage_at), MAX(usage_at), COUNT(usage_at) = COUNT(*), NULL
+            FROM filtered WHERE turn_index IN (SELECT turn_index FROM recent) GROUP BY turn_index
+            ORDER BY row_kind, turn_index
+            """;
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.Parameters.AddWithValue("$n", take);
+        using var r = cmd.ExecuteReader();
+        r.Read();
+        var total = ReadTotals(r, 2, credits);
+        if (total.Requests == 0)
+            return new UsageTurnsResult(false, "No usage rows are recorded for this session." + clampNote,
+                take, null, Array.Empty<UsageTurnSnapshot>()) { Truncated = clamped };
+        var truncated = clamped || r.GetInt64(15) > take;
+        var turns = new List<UsageTurnSnapshot>();
+        while (r.Read())
+            turns.Add(new UsageTurnSnapshot(r.GetInt64(1), ReadTotals(r, 2, credits),
+                r.IsDBNull(11) ? null : r.GetInt64(11), Str(r, 12), Str(r, 13), r.GetBoolean(14)));
+        var note = truncated ? $"The newest {take} usage-bearing turns are returned; total covers all session requests." : null;
+        return new UsageTurnsResult(true, note, take, total, turns) { Truncated = truncated };
+    }
+
+    private static readonly string[] UsageTimestampFormats =
+    {
+        "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK", "yyyy-MM-dd'T'HH:mm:ssK",
+    };
+
+    private static string? UsageTimestampUtc(string? value) =>
+        DateTimeOffset.TryParseExact(value, UsageTimestampFormats, CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var timestamp)
+            ? timestamp.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture)
+            : null;
+
     /// <summary>
     /// Token and cost figures of one session, summed from the per-request rows in assistant_usage_events. A store
     /// without that table, or a session without rows, is a normal answer (Recorded = false), not an error.

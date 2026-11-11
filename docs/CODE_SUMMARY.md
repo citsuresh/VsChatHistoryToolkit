@@ -14,7 +14,8 @@ graph LR
 
 | Project | Symbol | File | Responsibility |
 | --- | --- | --- | --- |
-| Core | `ChatStore` | `src/VsChatHistoryToolkit.Core/ChatStore.cs` | Read-only queries over sessions, turns, checkpoints, usage, events and files. |
+| Core | `ChatStore` | `src/VsChatHistoryToolkit.Core/ChatStore.cs` | Read-only queries over sessions, turns, checkpoints, usage, events and files; numeric-only latest-turn usage snapshots. |
+| Core | `UsageTurnsResult` / `UsageTurnSnapshot` | `src/VsChatHistoryToolkit.Core/Results.cs` | Latest usage-bearing indices, numeric totals and per-turn UTC usage-event endpoints, without chat metadata. |
 | Core | `StoreConnection` | `src/VsChatHistoryToolkit.Core/StoreConnection.cs` | Opens the SQLite store and validates its schema. |
 | Core | `SessionRenamer` | `src/VsChatHistoryToolkit.Core/SessionRenamer.cs` | Renames and undoes renames for a selected session. |
 | Core | `ActivityProbe` | `src/VsChatHistoryToolkit.Core/ActivityProbe.cs` | Summarizes activity from stored usage data. |

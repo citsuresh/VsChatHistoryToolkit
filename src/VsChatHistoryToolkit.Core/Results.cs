@@ -100,6 +100,17 @@ public sealed record UsageModelItem(string Model, UsageTotals Totals);
 /// <summary>PeakInputTokens is the largest prompt of a main-chat request in that turn; null when the turn has only subagent requests.</summary>
 public sealed record UsageTurnItem(long TurnIndex, UsageTotals Totals, long? PeakInputTokens);
 
+public sealed record UsageTurnSnapshot(
+    long TurnIndex, UsageTotals Totals, long? PeakInputTokens,
+    string? FirstAt, string? LastAt, bool TimestampsComplete);
+
+public sealed record UsageTurnsResult(
+    bool Recorded, string? Note, int Limit, UsageTotals? Total, IReadOnlyList<UsageTurnSnapshot> ByTurn)
+    : ToolResult("usage-turns")
+{
+    public int Count => ByTurn.Count;
+}
+
 /// <summary>
 /// PeakInputTokens and LastInputTokens describe the prompt size of main-chat requests only (no agent_id): the largest
 /// one, and the one of the latest request (by created_at, then rowid). Both are null when there are no main requests.

@@ -27,6 +27,7 @@ public sealed class ParsedArgs
     {
         var p = new ParsedArgs();
         var optionsEnded = false;
+        var valuedFlags = new List<string>();
         for (var i = 0; i < args.Count; i++)
         {
             var a = args[i];
@@ -39,7 +40,12 @@ public sealed class ParsedArgs
                 var eq = name.IndexOf('=');
                 if (eq >= 0) { inline = name[(eq + 1)..]; name = name[..eq]; }
 
-                if (Flags.Contains(name)) { p._flags.Add(name); continue; }
+                if (Flags.Contains(name))
+                {
+                    p._flags.Add(name);
+                    if (inline is not null) valuedFlags.Add(name);
+                    continue;
+                }
                 if (!ValueOptions.Contains(name))
                     throw new ToolkitException(ErrorKind.Usage, $"Unknown option '--{name}'.");
                 if (inline is null)
@@ -53,6 +59,17 @@ public sealed class ParsedArgs
 
             if (p.Command is null) p.Command = a;
             else p.Positionals.Add(a);
+        }
+        if (p.Command == "usage-turns")
+        {
+            foreach (var name in p._options.Keys)
+                if (name is not ("limit" or "root" or "log-dir"))
+                    throw new ToolkitException(ErrorKind.Usage, $"Option '--{name}' is not supported by usage-turns.");
+            foreach (var name in p._flags)
+                if (name is not ("text" or "help"))
+                    throw new ToolkitException(ErrorKind.Usage, $"Flag '--{name}' is not supported by usage-turns.");
+            if (valuedFlags.Count != 0)
+                throw new ToolkitException(ErrorKind.Usage, "Boolean flags do not accept values for usage-turns.");
         }
         if (p.Command != "usage-breakdown")
         {

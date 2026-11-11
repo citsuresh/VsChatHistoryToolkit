@@ -79,6 +79,13 @@ public static class TextFormatter
                 Line(sb,"  (nano_aiu is the stored cost unit; input tokens count the re-sent context on every request)");
                 if (s.Total!.Credits is not null) Line(sb, CreditsNote);
                 break;
+            case UsageTurnsResult s:
+                Line(sb,$"usage-turns: {s.Count} turn(s), newest {s.Limit}, ascending turn_index");
+                if (s.Note is not null) Line(sb,$"  {s.Note}");
+                if (s.Total is { } totalUsage) Line(sb,$"  total (all session requests): {UsageLine(totalUsage)}");
+                foreach (var t in s.ByTurn)
+                    Line(sb,$"  turn {t.TurnIndex}: {UsageLine(t.Totals)}, main peak in {Num(t.PeakInputTokens)}, first {t.FirstAt ?? "-"}, last {t.LastAt ?? "-"}, timestamps complete {t.TimestampsComplete.ToString().ToLowerInvariant()}");
+                break;
             case UsageTopResult s:
                 Line(sb,$"usage-top: {s.Count} chat(s) by {s.By}{(s.From is null ? "" : $" from {s.From}")}{(s.To is null ? "" : $" before {s.To}")}");
                 if (!s.Recorded) { Line(sb,$"  {s.Note}"); break; }

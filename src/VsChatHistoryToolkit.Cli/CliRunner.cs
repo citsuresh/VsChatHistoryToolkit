@@ -18,6 +18,7 @@ public static class CliRunner
           turns <id> [--index I | --range A-B] [--max-chars N]
           checkpoints <id> [--full]
           usage <id> [--by-turn]
+          usage-turns <id> [--limit N]
           usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu|credits] [--limit N]
           usage-breakdown [--from DATE] [--to DATE] [--repo TEXT] [--model TEXT] [--group-by day,repo,model] [--limit N]
           events <id>
@@ -108,6 +109,9 @@ public static class CliRunner
 
             case "usage":
                 return store.Usage(a.Require(1, "usage <id> [--by-turn]")[0], a.Flag("by-turn"));
+
+            case "usage-turns":
+                return store.UsageTurns(a.Require(1, "usage-turns <id> [--limit N]")[0], a.IntOption("limit"));
 
             case "usage-top":
                 a.Require(0, "usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu|credits] [--limit N]");

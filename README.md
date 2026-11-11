@@ -40,6 +40,7 @@ chathistory show <id>
 chathistory turns <id> [--index I | --range A-B] [--max-chars N]
 chathistory checkpoints <id> [--full]
 chathistory usage <id> [--by-turn]
+chathistory usage-turns <id> [--limit N]
 chathistory usage-top [--from DATE] [--to DATE] [--by requests|tokens|aiu|credits] [--limit N]
 chathistory usage-breakdown [--from DATE] [--to DATE] [--repo TEXT] [--model TEXT] [--group-by day,repo,model] [--limit N]
 chathistory events <id>
@@ -54,6 +55,10 @@ chathistory undo-rename <id> [--force] [--dry-run]
 ```
 
 A renamed title appears only after Visual Studio restarts.
+
+### Latest numeric turn usage
+
+`usage-turns <id>` returns the newest 20 usage-bearing turn indices (maximum `--limit` 100), ordered ascending with gaps preserved, even after 100+ turns. It returns numeric usage, nullable credits and UTC per-turn usage-event `first_at`/`last_at`, never titles, messages, model names or paths. `total` covers the entire session, not only the window. Polling clients replace rows by `turn_index`; results are snapshots, not deltas. Existing `usage <id> --by-turn` still returns the first 100 indices. See the CLI contract for missing timestamps, credit availability and error behavior.
 
 ### Rollup
 
