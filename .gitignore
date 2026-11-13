@@ -19,3 +19,6 @@ TestResults/
 *.db-shm
 session-state/
 rename-log.jsonl
+
+# Written by scripts\agent\Build-Toolkit.ps1 after a successful build
+.built-version
